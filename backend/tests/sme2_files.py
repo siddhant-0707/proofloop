@@ -12,13 +12,14 @@ LATITUDE = np.array([29.9, 29.8, 29.7], dtype=np.float32)
 LONGITUDE = np.array([-83.5, -83.4, -83.3], dtype=np.float32)
 
 
-def write_sme2(path: Path, **layers: np.ndarray | float) -> Path:
-    """Layers default to dry, unchanging land; NaN values are written as fill."""
+def write_sme2(path: Path, shift_deg: float = 0.0, **layers: np.ndarray | float) -> Path:
+    """Layers default to dry, unchanging land; NaN values are written as fill.
+    `shift_deg` moves the grid north and east, off the GCOV test scene."""
     defaults = {"soil_moisture": 0.2, "sigma0_hh": 0.01, "sigma0_hv": 0.002, "water_fraction": 0.0}
     with h5py.File(path, "w") as f:
         grids = f.create_group("science/LSAR/SME2/grids")
-        grids["latitude"] = LATITUDE
-        grids["longitude"] = LONGITUDE
+        grids["latitude"] = LATITUDE + np.float32(shift_deg)
+        grids["longitude"] = LONGITUDE + np.float32(shift_deg)
         for name, key in LAYERS.items():
             value = layers.get(name, defaults[name])
             data = np.broadcast_to(np.asarray(value, dtype=np.float32), (3, 3)).copy()
