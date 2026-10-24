@@ -19,15 +19,18 @@ Permanent water cells carry no evidence.
 A cell is flagged when its evidence reaches 0.5 (a 3 dB change or +0.1 m^3/m^3).
 """
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 from pyproj import Transformer
 
+from proofloop.exposure.census import Block
+from proofloop.exposure.shelters import ShelterSite
 from proofloop.nisar.gcov import GcovGrid, read_gcov
 from proofloop.nisar.sme2 import BBox, Sme2Grid, read_sme2
-from proofloop.world import FloodKind, Grid, HazardLayer, World
+from proofloop.world import FloodKind, Grid, HazardLayer, Shelter, World
 
 STRONG_CHANGE_DB = 6.0
 STRONG_WETTING = 0.2
@@ -43,8 +46,10 @@ OPEN_WATER_DB = -15.0
 # that brighten are mostly bare fields wetted or planted (the center pivots east of Cross City).
 CANOPY_MIN_DB = -12.0
 GCOV_CELL_M = 60.0
-# How far people can travel to a shelter, used to size World.reach_cells.
-TRAVEL_REACH_M = 5_000.0
+SME2_CELL_M = 200.0
+# How far people can travel to a shelter along the grid, used to size World.reach_cells.
+# Coastal towns are 30 to 55 km from the shelters in Cross City and Perry.
+TRAVEL_REACH_M = 60_000.0
 _METERS_PER_DEGREE = 111_320.0
 
 
@@ -112,7 +117,120 @@ def build_world_from_sme2(before: Path, after: Path, bbox: BBox) -> World:
         grid=Grid(latitude=pre.latitude, longitude=pre.longitude),
         hazard=HazardLayer(flooded=evidence >= FLAG_THRESHOLD, confidence=evidence, method="sme2"),
         population=np.zeros(evidence.shape),
+        reach_cells=round(TRAVEL_REACH_M / SME2_CELL_M),
     )
+
+
+def with_exposure(world: World, blocks: Sequence[Block], sites: Sequence[ShelterSite]) -> World:
+    """Add Census block population and shelters to a World built from radar."""
+    return replace(
+        world,
+        population=rasterize_population(world.grid, blocks),
+        shelters=tuple(_place_shelter(world.grid, site) for site in sites),
+    )
+
+
+def rasterize_population(grid: Grid, blocks: Sequence[Block]) -> np.ndarray:
+    """People per cell, each block's population spread evenly over the cells it covers.
+
+    Blocks partition the county, and a block's rings may enclose smaller blocks, so
+    blocks are drawn largest first and nested blocks overwrite their surroundings.
+    A block too small to cover any cell center puts everyone in its interior point's
+    cell. A block cut by the grid edge keeps only the share of its area inside.
+    """
+    west, north, dlon, dlat = _edges(grid)
+    label = np.full(grid.shape, -1, dtype=np.int64)
+    for i in sorted(range(len(blocks)), key=lambda i: blocks[i].area_m2, reverse=True):
+        rings = [np.array(ring, dtype=np.float64) for ring in blocks[i].rings if len(ring) >= 3]
+        if rings:
+            # Cell units: cell (row, col) is centered at (x, y) = (col, row).
+            cells = [
+                np.column_stack([(r[:, 0] - west) / dlon, (north - r[:, 1]) / dlat]) - 0.5
+                for r in rings
+            ]
+            _fill_rings(label, cells, i)
+    covered = label >= 0
+    counts = np.bincount(label[covered], minlength=len(blocks))
+
+    cell_m2 = dlat * dlon * _METERS_PER_DEGREE**2 * np.cos(np.radians(grid.latitude.mean()))
+    per_cell = np.zeros(len(blocks))
+    population = np.zeros(grid.shape)
+    for i, block in enumerate(blocks):
+        if counts[i] == 0:
+            cell = _cell_of(grid, *block.point)
+            if cell is not None:
+                population[cell] += block.population
+        elif _inside(grid, block):
+            per_cell[i] = block.population / counts[i]
+        else:
+            share = min(1.0, counts[i] * cell_m2 / block.area_m2) if block.area_m2 else 1.0
+            per_cell[i] = block.population * share / counts[i]
+    population[covered] += per_cell[label[covered]]
+    return population
+
+
+def _fill_rings(label: np.ndarray, rings: list[np.ndarray], value: int) -> None:
+    """Set cells whose centers lie inside the rings (even-odd rule, so holes stay out)."""
+    closed = [r if np.array_equal(r[0], r[-1]) else np.vstack([r, r[:1]]) for r in rings]
+    start = np.concatenate([r[:-1] for r in closed])
+    end = np.concatenate([r[1:] for r in closed])
+    rows, cols = label.shape
+    first = max(0, int(np.ceil(start[:, 1].min())))
+    last = min(rows - 1, int(np.floor(start[:, 1].max())))
+    if first > last:
+        return
+    y = np.arange(first, last + 1, dtype=np.float64)[:, None]
+    (x0, y0), (x1, y1) = start.T, end.T
+    crosses = (y0 <= y) != (y1 <= y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        x = np.where(crosses, x0 + (y - y0) * (x1 - x0) / (y1 - y0), np.inf)
+    x.sort(axis=1)
+    for i, count in enumerate(crosses.sum(axis=1)):
+        for left, right in zip(x[i, 0:count:2], x[i, 1:count:2], strict=True):
+            c0, c1 = max(0, int(np.ceil(left))), min(cols, int(np.ceil(right)))
+            if c0 < c1:
+                label[first + i, c0:c1] = value
+
+
+def _place_shelter(grid: Grid, site: ShelterSite) -> Shelter:
+    cell = _cell_of(grid, site.longitude, site.latitude)
+    if cell is None:
+        raise ValueError(
+            f"shelter {site.id} at ({site.latitude}, {site.longitude}) is off the grid"
+        )
+    return Shelter(
+        id=site.id,
+        name=site.name,
+        row=cell[0],
+        col=cell[1],
+        capacity=site.capacity,
+        cost=site.cost,
+    )
+
+
+def _edges(grid: Grid) -> tuple[float, float, float, float]:
+    """West and north outer edges and the cell size, in degrees."""
+    dlat = abs(float(grid.latitude[1] - grid.latitude[0])) if grid.latitude.size > 1 else 1.0
+    dlon = abs(float(grid.longitude[1] - grid.longitude[0])) if grid.longitude.size > 1 else 1.0
+    return grid.longitude[0] - dlon / 2, grid.latitude[0] + dlat / 2, dlon, dlat
+
+
+def _cell_of(grid: Grid, lon: float, lat: float) -> tuple[int, int] | None:
+    west, north, dlon, dlat = _edges(grid)
+    row, col = int(np.floor((north - lat) / dlat)), int(np.floor((lon - west) / dlon))
+    rows, cols = grid.shape
+    return (row, col) if 0 <= row < rows and 0 <= col < cols else None
+
+
+def _inside(grid: Grid, block: Block) -> bool:
+    """Whether every vertex of the block lies on the grid or its outer edge."""
+    west, north, dlon, dlat = _edges(grid)
+    rows, cols = grid.shape
+    lon, lat = np.array([p for ring in block.rings for p in ring]).T
+    east, south = west + cols * dlon, north - rows * dlat
+    eps = 1e-9
+    inside = (lon >= west - eps) & (lon <= east + eps) & (lat >= south - eps) & (lat <= north + eps)
+    return bool(inside.all())
 
 
 def _latlon_grid(bbox: BBox, cell_m: float) -> Grid:

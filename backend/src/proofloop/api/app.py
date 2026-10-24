@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
-from proofloop.api.hazard_image import hazard_bounds, hazard_png
+from proofloop.api.hazard_image import hazard_bounds, hazard_png, population_png
 from proofloop.loop import Scenario, Transcript, run_proofloop
 from proofloop.loop.demo import DEMO_SCENARIO, DemoAdversary, DemoPlanner, demo_world
 from proofloop.paths import WORLD_CACHE
@@ -38,6 +38,26 @@ class HazardLayerInfo(BaseModel):
     open_water_cells: int | None
     under_canopy_cells: int | None
     image_url: str
+
+
+class ShelterInfo(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+    capacity: float
+    cost: float
+
+
+class ExposureInfo(BaseModel):
+    total_population: float
+    people_in_flooded_cells: float
+    population_image_url: str
+    shelters: list[ShelterInfo]
+
+
+# Enough to open two of the four shelters; sliders will edit this base scenario.
+BIG_BEND_SCENARIO = Scenario(budget=150_000)
 
 
 @lru_cache(maxsize=1)
@@ -78,6 +98,49 @@ def hazard_image() -> Response:
 @lru_cache(maxsize=1)
 def _hazard_png_bytes() -> bytes:
     return hazard_png(big_bend_world())
+
+
+@app.get("/api/exposure")
+def exposure() -> ExposureInfo:
+    world = big_bend_world()
+    lat, lon = world.grid.latitude, world.grid.longitude
+    return ExposureInfo(
+        total_population=float(world.population.sum()),
+        people_in_flooded_cells=float(world.population[world.hazard.flooded].sum()),
+        population_image_url="/api/population.png",
+        shelters=[
+            ShelterInfo(
+                id=s.id,
+                name=s.name,
+                latitude=float(lat[s.row]),
+                longitude=float(lon[s.col]),
+                capacity=s.capacity,
+                cost=s.cost,
+            )
+            for s in world.shelters
+        ],
+    )
+
+
+@app.get("/api/population.png")
+def population_image() -> Response:
+    return Response(
+        content=_population_png_bytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@lru_cache(maxsize=1)
+def _population_png_bytes() -> bytes:
+    return population_png(big_bend_world())
+
+
+@app.post("/api/loop")
+def run_loop(scenario: Scenario | None = None) -> Transcript:
+    """Run the Loop on the real Big Bend World with rule-based agents."""
+    world = big_bend_world()
+    return run_proofloop(world, scenario or BIG_BEND_SCENARIO, DemoPlanner(), DemoAdversary())
 
 
 @app.post("/api/loop/demo")

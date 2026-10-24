@@ -104,6 +104,28 @@ def test_people_beyond_travel_reach_are_unreached():
     assert transcript.rounds[0].result.people_sheltered == 0
 
 
+def test_the_detour_around_a_flood_counts_toward_travel_reach():
+    # The top-right cell is 8 steps from A, around the flooded wall through the bottom row.
+    rows = [
+        "A.~.~",
+        "..~..",
+        ".....",
+    ]
+    sheltered = {}
+    for reach in (7, 8):
+        world = replace(world_from_map(rows, pop=10, shelters={"A": (100, 50)}), reach_cells=reach)
+        transcript = run_proofloop(
+            world,
+            Scenario(budget=1000),
+            ScriptedPlanner([open_plan("A", cost=50, sheltered=0)]),
+            ScriptedAdversary([offline("A")]),
+            rounds=1,
+        )
+        sheltered[reach] = transcript.rounds[0].result.people_sheltered
+
+    assert sheltered == {7: 20, 8: 30}
+
+
 def test_an_attack_takes_effect_in_the_next_round():
     world = world_from_map(["A.~.B"], pop=10, shelters={"A": (10, 100), "B": (10, 100)})
 

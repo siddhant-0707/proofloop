@@ -58,6 +58,22 @@ export type HazardLayerInfo = {
   image_url: string;
 };
 
+export type ShelterInfo = {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  capacity: number;
+  cost: number;
+};
+
+export type ExposureInfo = {
+  total_population: number;
+  people_in_flooded_cells: number;
+  population_image_url: string;
+  shelters: ShelterInfo[];
+};
+
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.text();
@@ -68,6 +84,14 @@ async function json<T>(response: Response): Promise<T> {
 
 export async function fetchHazard(): Promise<HazardLayerInfo> {
   return json(await fetch("/api/hazard"));
+}
+
+export async function fetchExposure(): Promise<ExposureInfo> {
+  return json(await fetch("/api/exposure"));
+}
+
+export async function runLoop(): Promise<Transcript> {
+  return json(await fetch("/api/loop", { method: "POST" }));
 }
 
 export async function runDemoLoop(): Promise<Transcript> {

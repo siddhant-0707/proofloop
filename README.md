@@ -31,7 +31,8 @@ machine urs.earthdata.nasa.gov login <user> password <pass>
 cd backend
 uv run python -m proofloop.nisar.download --max-priority 1
 
-# Build the cached Big Bend World (GCOV flood layer if downloaded, else SME2), then serve the API on :8000
+# Build the cached Big Bend World (GCOV flood layer if downloaded, else SME2; downloads Census
+# blocks on first run), then serve the API on :8000
 uv run python -m proofloop.world.build
 uv run uvicorn proofloop.api.app:app --reload
 

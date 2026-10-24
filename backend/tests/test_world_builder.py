@@ -3,16 +3,20 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 from gcov_files import CENTER_LAT, CENTER_LON, SCENE_BBOX, center_patch, write_gcov
 from sme2_files import one_cell, write_sme2
 
+from proofloop.exposure.census import Block
+from proofloop.exposure.shelters import ShelterSite
 from proofloop.nisar.sme2 import BBox
-from proofloop.world import FloodKind, World
+from proofloop.world import FloodKind, Grid, HazardLayer, World
 from proofloop.world.builder import (
     GranulePair,
     build_world,
     build_world_from_gcov,
     build_world_from_sme2,
+    with_exposure,
 )
 from proofloop.world.store import load_world, save_world
 
@@ -130,7 +134,96 @@ def test_gcov_world_tiles_the_bounding_box_in_60_m_cells(tmp_path):
     assert SCENE_BBOX.west < lon.min() < lon.max() < SCENE_BBOX.east
     assert np.isclose(abs(lat[1] - lat[0]) * 111_320, 60, rtol=0.1)
     assert world.hazard.flooded.shape == world.population.shape == world.grid.shape
-    assert world.reach_cells == 83  # 5 km of travel
+    assert world.reach_cells == 1000  # 60 km of travel
+
+
+def _dry_world() -> World:
+    """4 x 3 cells of 0.1 degrees; outer edges 30.0 N to 29.6 N and 84.0 W to 83.7 W."""
+    grid = Grid(
+        latitude=np.array([29.95, 29.85, 29.75, 29.65]),
+        longitude=np.array([-83.95, -83.85, -83.75]),
+    )
+    no_flood = np.zeros(grid.shape)
+    return World(
+        grid=grid,
+        hazard=HazardLayer(flooded=no_flood > 0, confidence=no_flood, method="hand-built"),
+        population=no_flood,
+    )
+
+
+CELL_M2 = 0.1 * 0.1 * 111_320**2 * np.cos(np.radians(29.8))
+
+
+def _block(
+    population: float, west: float, south: float, east: float, north: float, area_cells=None
+) -> Block:
+    width, height = round((east - west) / 0.1), round((north - south) / 0.1)
+    return Block(
+        geoid=f"{west}{south}",
+        population=population,
+        area_m2=(area_cells if area_cells is not None else width * height) * CELL_M2,
+        point=((west + east) / 2, (south + north) / 2),
+        rings=(((west, north), (east, north), (east, south), (west, south), (west, north)),),
+    )
+
+
+def test_block_population_is_spread_evenly_over_the_cells_it_covers():
+    block = _block(40, west=-84.0, south=29.8, east=-83.8, north=30.0)
+
+    world = with_exposure(_dry_world(), [block], [])
+
+    np.testing.assert_allclose(
+        world.population,
+        [[10, 10, 0], [10, 10, 0], [0, 0, 0], [0, 0, 0]],
+    )
+
+
+def test_a_block_inside_another_keeps_its_own_people():
+    county = _block(110, west=-84.0, south=29.6, east=-83.7, north=30.0)
+    town = _block(7, west=-83.8, south=29.6, east=-83.7, north=29.7)
+
+    world = with_exposure(_dry_world(), [town, county], [])
+
+    assert world.population[3, 2] == 7
+    np.testing.assert_allclose(world.population[:3], 10)
+    assert world.population.sum() == pytest.approx(117)
+
+
+def test_a_block_smaller_than_a_cell_puts_everyone_at_its_interior_point():
+    tiny = _block(5, west=-83.86, south=29.74, east=-83.84, north=29.76, area_cells=0.04)
+
+    world = with_exposure(_dry_world(), [tiny], [])
+
+    assert world.population[2, 1] == 5
+    assert world.population.sum() == 5
+
+
+def test_a_block_cut_by_the_grid_edge_keeps_only_its_share_inside():
+    straddling = _block(40, west=-84.2, south=29.9, east=-83.8, north=30.0)  # half off the west
+    outside = _block(99, west=-85.0, south=29.0, east=-84.5, north=29.5)
+
+    world = with_exposure(_dry_world(), [straddling, outside], [])
+
+    np.testing.assert_allclose(world.population[0], [10, 10, 0])
+    assert world.population.sum() == pytest.approx(20)
+
+
+def test_shelters_are_placed_in_the_cell_that_contains_them():
+    site = ShelterSite("s1", "School", "1 Main St", latitude=29.72, longitude=-83.78, capacity=300)
+
+    world = with_exposure(_dry_world(), [], [site])
+
+    (shelter,) = world.shelters
+    assert (shelter.id, shelter.row, shelter.col) == ("s1", 2, 2)
+    assert shelter.capacity == 300
+    assert shelter.cost == site.cost
+
+
+def test_a_shelter_off_the_grid_is_rejected():
+    site = ShelterSite("far", "Far School", "Perry", latitude=30.5, longitude=-83.8, capacity=100)
+
+    with pytest.raises(ValueError, match="off the grid"):
+        with_exposure(_dry_world(), [], [site])
 
 
 def test_world_falls_back_to_sme2_when_gcov_is_missing(tmp_path):
