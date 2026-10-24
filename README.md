@@ -31,6 +31,11 @@ machine urs.earthdata.nasa.gov login <user> password <pass>
 cd backend
 uv run python -m proofloop.nisar.download --max-priority 1
 
+# Gemma 4 agents: put API keys in backend/.env (git-ignored). OpenRouter is the primary
+# provider and the Gemini API the fallback; set at least one.
+#   OPENROUTER_API_KEY=sk-or-...
+#   GEMINI_API_KEY=...
+
 # Build the cached Big Bend World (GCOV flood layer if downloaded, else SME2; downloads Census
 # blocks on first run), then serve the API on :8000
 uv run python -m proofloop.world.build
@@ -48,6 +53,16 @@ Checks:
 cd backend && uv run pytest && uv run pyright && uv run ruff check . && uv run ruff format --check .
 cd web && npx tsc --noEmit && npm run lint
 ```
+
+## API
+
+| Route | What it does |
+|---|---|
+| `GET /api/hazard`, `/api/hazard.png` | Hazard layer metadata and map image |
+| `GET /api/exposure`, `/api/population.png` | Population, shelters and the population image |
+| `POST /api/loop/gemma` | Run the Loop on the Big Bend World with Gemma 4 as Planner and Adversary |
+| `POST /api/loop` | Run the Loop on the Big Bend World with rule-based agents |
+| `POST /api/loop/demo` | Run the Loop on the fictional demo county with rule-based agents |
 
 ## Data
 

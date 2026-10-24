@@ -31,9 +31,10 @@ class Claims(_Model):
 
 
 class Plan(_Model):
+    # Rationale first, so a model explains itself before committing to actions and numbers.
+    rationale: str = Field(default="", max_length=600)
     actions: list[Action]
     claims: Claims
-    rationale: str = ""
 
     @property
     def shelter_ids(self) -> list[str]:
@@ -42,6 +43,8 @@ class Plan(_Model):
 
 
 class ShelterOffline(_Model):
+    # Rationale first, as in Plan: the Adversary says why before choosing.
+    rationale: str = Field(default="", max_length=400)
     type: Literal["shelter_offline"] = "shelter_offline"
     shelter_id: str
 
@@ -70,16 +73,27 @@ class Verdict(_Model):
     checks: list[Check]
 
 
+class AgentCall(_Model):
+    """Which model answered an agent call and how long it took (no model for rule-based agents)."""
+
+    model: str | None = None
+    provider: str | None = None
+    seconds: float
+    skipped: list[str] = []
+
+
 class Round(_Model):
     index: int
     scenario: Scenario
     plan: Plan | None = None
     planner_error: str | None = None
+    planner_call: AgentCall | None = None
     verdict: Verdict | None = None
     result: SimulationResult | None = None
     # The attack the next round has to answer; the last round's attack is the final attack.
     attack: Attack | None = None
     adversary_error: str | None = None
+    adversary_call: AgentCall | None = None
 
 
 class Recommendation(_Model):
@@ -95,5 +109,6 @@ class Transcript(_Model):
     # recommendation is the verified plan that best survives it on top of every earlier attack.
     final_attack: Attack | None = None
     final_adversary_error: str | None = None
+    final_adversary_call: AgentCall | None = None
     final_scenario: Scenario
     recommendation: Recommendation | None = None

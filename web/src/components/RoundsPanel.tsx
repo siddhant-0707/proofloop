@@ -5,6 +5,8 @@ import { createContext, useContext, useEffect, useState } from "react";
 import {
   fetchExposure,
   runLoop,
+  type AgentCall,
+  type AgentKind,
   type Plan,
   type Round,
   type SimulationResult,
@@ -29,6 +31,7 @@ function useShelterList() {
 }
 
 export default function RoundsPanel() {
+  const [agents, setAgents] = useState<AgentKind>("gemma");
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   const [running, setRunning] = useState(false);
@@ -44,7 +47,7 @@ export default function RoundsPanel() {
     setRunning(true);
     setError(null);
     try {
-      setTranscript(await runLoop());
+      setTranscript(await runLoop(agents));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -59,9 +62,10 @@ export default function RoundsPanel() {
           <div>
             <h2 className="text-base font-semibold text-slate-900">Stress test</h2>
             <p className="text-xs text-slate-500">
-              Dixie and Taylor counties, 4 public shelters, rule-based agents
+              Dixie and Taylor counties, 4 public shelters
               {transcript && `. Budget ${dollars(transcript.base_scenario.budget)}`}.
             </p>
+            <AgentPicker value={agents} onChange={setAgents} disabled={running} />
           </div>
           <button
             type="button"
@@ -135,6 +139,10 @@ function RoundCard({ round, recommended }: { round: Round; recommended: boolean 
         </p>
       )}
       {round.result && <Score result={round.result} />}
+      {round.plan?.rationale && (
+        <p className="mt-2 text-xs leading-relaxed text-slate-600">{round.plan.rationale}</p>
+      )}
+      {round.planner_call && <CallLine label="Planner" call={round.planner_call} />}
 
       {failed.length > 0 && (
         <ul className="mt-2 space-y-1 rounded-lg bg-red-50 p-2 text-xs text-red-700">
@@ -148,12 +156,73 @@ function RoundCard({ round, recommended }: { round: Round; recommended: boolean 
 
       {round.adversary_error && <ErrorLine label="Adversary" message={round.adversary_error} />}
       {round.attack && (
-        <p className="mt-2 border-t border-slate-100 pt-2 text-xs text-amber-700">
-          <span className="font-medium">Attack:</span> {shelterName(round.attack.shelter_id)} goes
-          offline
-        </p>
+        <div className="mt-2 border-t border-slate-100 pt-2">
+          <p className="text-xs text-amber-700">
+            <span className="font-medium">Attack:</span> {shelterName(round.attack.shelter_id)}{" "}
+            goes offline
+          </p>
+          {round.attack.rationale && (
+            <p className="mt-1 text-xs leading-relaxed text-slate-600">{round.attack.rationale}</p>
+          )}
+          {round.adversary_call && <CallLine label="Adversary" call={round.adversary_call} />}
+        </div>
       )}
     </li>
+  );
+}
+
+const AGENTS: { value: AgentKind; label: string }[] = [
+  { value: "gemma", label: "Gemma 4" },
+  { value: "rules", label: "Rule-based" },
+];
+
+function AgentPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: AgentKind;
+  onChange: (agents: AgentKind) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Agents"
+      className="mt-2 inline-flex rounded-lg bg-slate-100 p-0.5 text-xs"
+    >
+      {AGENTS.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={value === option.value}
+          disabled={disabled}
+          onClick={() => onChange(option.value)}
+          className={`rounded-md px-2.5 py-1 font-medium transition disabled:cursor-not-allowed ${
+            value === option.value
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function CallLine({ label, call }: { label: string; call: AgentCall }) {
+  if (!call.model) return null; // rule-based agents
+  const n = call.skipped.length;
+  const fallback = n ? ` after ${n} fallback${n === 1 ? "" : "s"}` : "";
+  return (
+    <p
+      className="mt-1.5 text-[11px] text-slate-400"
+      title={call.skipped.length ? call.skipped.join("\n") : undefined}
+    >
+      {label}: {call.model} via {call.provider} · {call.seconds.toFixed(1)} s{fallback}
+    </p>
   );
 }
 
@@ -186,6 +255,14 @@ function FinalAttack({ transcript }: { transcript: Transcript }) {
     <li className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-800">
       <span className="font-semibold">Final attack:</span>{" "}
       {shelterName(transcript.final_attack.shelter_id)} goes offline. No plan gets to answer it.
+      {transcript.final_attack.rationale && (
+        <p className="mt-1 text-xs leading-relaxed text-amber-900/80">
+          {transcript.final_attack.rationale}
+        </p>
+      )}
+      {transcript.final_adversary_call && (
+        <CallLine label="Adversary" call={transcript.final_adversary_call} />
+      )}
     </li>
   );
 }

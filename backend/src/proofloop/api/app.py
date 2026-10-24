@@ -8,15 +8,22 @@ from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from proofloop.api.hazard_image import hazard_bounds, hazard_png, population_png
-from proofloop.loop import Scenario, Transcript, run_proofloop
+from proofloop.gemma.agents import GemmaAdversary, GemmaPlanner
+from proofloop.gemma.client import GemmaClient
+from proofloop.gemma.providers import providers_from_env
+from proofloop.loop import Adversary, Planner, Scenario, Transcript, run_proofloop
 from proofloop.loop.demo import DEMO_SCENARIO, DemoAdversary, DemoPlanner, demo_world
-from proofloop.paths import WORLD_CACHE
+from proofloop.paths import BACKEND_DIR, WORLD_CACHE
 from proofloop.world import FloodKind, World
 from proofloop.world.store import load_world
+
+# Variables already set in the shell win over backend/.env.
+load_dotenv(BACKEND_DIR / ".env", override=False)
 
 app = FastAPI(title="ProofLoop")
 
@@ -139,11 +146,28 @@ def _population_png_bytes() -> bytes:
 @app.post("/api/loop")
 def run_loop(scenario: Scenario | None = None) -> Transcript:
     """Run the Loop on the real Big Bend World with rule-based agents."""
-    world = big_bend_world()
-    return run_proofloop(world, scenario or BIG_BEND_SCENARIO, DemoPlanner(), DemoAdversary())
+    return _run_big_bend(scenario, DemoPlanner(), DemoAdversary())
 
 
 @app.post("/api/loop/demo")
 def run_demo_loop(scenario: Scenario | None = None) -> Transcript:
     """Run the Loop on the hand-built World with rule-based agents."""
     return run_proofloop(demo_world(), scenario or DEMO_SCENARIO, DemoPlanner(), DemoAdversary())
+
+
+@app.post("/api/loop/gemma")
+def run_gemma_loop(scenario: Scenario | None = None) -> Transcript:
+    """Run the Loop on the real Big Bend World with Gemma 4 as Planner and Adversary."""
+    providers = providers_from_env()
+    if not providers:
+        raise HTTPException(
+            status_code=503,
+            detail="Gemma is not configured: set OPENROUTER_API_KEY and/or GEMINI_API_KEY "
+            "in backend/.env",
+        )
+    client = GemmaClient(providers)
+    return _run_big_bend(scenario, GemmaPlanner(client), GemmaAdversary(client))
+
+
+def _run_big_bend(scenario: Scenario | None, planner: Planner, adversary: Adversary) -> Transcript:
+    return run_proofloop(big_bend_world(), scenario or BIG_BEND_SCENARIO, planner, adversary)
