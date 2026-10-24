@@ -10,7 +10,11 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **Study area:** NISAR track 148 ascending, frame 16 (Dixie County and coastal Taylor County). Frame 17 (Perry, Tallahassee) is optional.
 - **Epochs:** before 2026-09-28, after 2026-10-10 (about one day after landfall).
 - **User:** a Taylor or Dixie County emergency manager.
-- **Loop:** Planner and Adversary agents on Gemini 3, 3 rounds, structured JSON output only.
+- **Loop:** Planner and Adversary agents on Gemma 4, 3 rounds plus a final attack, structured JSON output only.
+- **Model hosting:** Gemma 4 26B A4B (`gemma-4-26b-a4b-it`) on the Gemini API, which is free with no paid tier.
+  On a rate-limit error, the same request falls back to OpenRouter's paid `google/gemma-4-26b-a4b-it` (about $0.07 per 1M input and $0.23 per 1M output tokens; under $1 for the whole event).
+  Both providers receive the full JSON schema, and every response is validated against the Plan or Attack schema.
+  API keys live in the backend's `.env` and are never committed.
 - **Scoring:** a small deterministic Python simulation, never an LLM. The Verifier re-runs it on the Planner's claimed numbers.
 - **Hindcast:** plans are scored against the flood extent NISAR actually observed.
 - **Adversary attacks (fixed menu):** shelter offline, road closed, budget cut, and "flooded outside the flood zone" (FEMA NFHL vs. NISAR).
@@ -18,7 +22,7 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **Sources:** a curated pack (FEMA, NHC, county shelter lists). No open web research at runtime.
 - **Demo:** live sliders trigger one re-plan round; a recorded golden run is the fallback.
 - **Stack:** Next.js + MapLibre (web), FastAPI (backend), uv.
-- **Prizes:** overall, Vobile, MLH Best Use of Gemini, MLH Best Open Source (MIT license).
+- **Prizes:** overall, Vobile, MLH Best Use of Gemma, MLH Best Open Source (MIT license).
 
 ## Checkpoints
 

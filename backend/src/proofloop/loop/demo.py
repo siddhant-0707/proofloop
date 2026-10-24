@@ -1,4 +1,4 @@
-"""A hand-built World and rule-based agents for running the Loop without Gemini.
+"""A hand-built World and rule-based agents for running the Loop without a model.
 
 The World is a fictional county on an abstract grid: two flooded neighbourhoods
 and six shelters. Names, capacities and costs are made up and must not be read
