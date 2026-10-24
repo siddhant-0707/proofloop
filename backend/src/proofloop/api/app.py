@@ -3,20 +3,34 @@
 uv run uvicorn proofloop.api.app:app --reload
 """
 
+import json
 import os
+import queue
+import threading
+from collections.abc import Callable
 from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from proofloop.api.hazard_image import hazard_bounds, hazard_png, population_png
 from proofloop.gemma.agents import GemmaAdversary, GemmaPlanner
 from proofloop.gemma.client import GemmaClient
 from proofloop.gemma.providers import providers_from_env
-from proofloop.loop import Adversary, Planner, Scenario, Transcript, run_proofloop
+from proofloop.loop import (
+    DEFAULT_ROUNDS,
+    Adversary,
+    Planner,
+    Round,
+    Scenario,
+    Transcript,
+    run_proofloop,
+)
 from proofloop.loop.demo import DEMO_SCENARIO, DemoAdversary, DemoPlanner, demo_world
 from proofloop.paths import BACKEND_DIR, WORLD_CACHE
 from proofloop.world import FloodKind, World
@@ -146,7 +160,7 @@ def _population_png_bytes() -> bytes:
 @app.post("/api/loop")
 def run_loop(scenario: Scenario | None = None) -> Transcript:
     """Run the Loop on the real Big Bend World with rule-based agents."""
-    return _run_big_bend(scenario, DemoPlanner(), DemoAdversary())
+    return _run_big_bend(scenario, *_agents("rules"))
 
 
 @app.post("/api/loop/demo")
@@ -158,6 +172,55 @@ def run_demo_loop(scenario: Scenario | None = None) -> Transcript:
 @app.post("/api/loop/gemma")
 def run_gemma_loop(scenario: Scenario | None = None) -> Transcript:
     """Run the Loop on the real Big Bend World with Gemma 4 as Planner and Adversary."""
+    return _run_big_bend(scenario, *_agents("gemma"))
+
+
+AgentKind = Literal["gemma", "rules"]
+
+
+@app.post("/api/loop/stream")
+def stream_loop(agents: AgentKind = "gemma", scenario: Scenario | None = None) -> StreamingResponse:
+    """Run the Loop on the Big Bend World, streaming one JSON event per line.
+
+    Events: {"type": "started", "rounds": n}, then {"type": "round", "round": ...} as each
+    round completes, then {"type": "transcript", "transcript": ...} or {"type": "error"}.
+    """
+    planner, adversary = _agents(agents)  # fails with 503 before streaming starts
+    events: queue.Queue[dict | None] = queue.Queue()
+
+    def work() -> None:
+        try:
+            transcript = _run_big_bend(
+                scenario,
+                planner,
+                adversary,
+                on_round=lambda r: events.put(
+                    {"type": "round", "round": r.model_dump(mode="json")}
+                ),
+            )
+            events.put({"type": "transcript", "transcript": transcript.model_dump(mode="json")})
+        except Exception as error:  # noqa: BLE001 - reported to the client as an event
+            events.put({"type": "error", "detail": f"{type(error).__name__}: {error}"})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def lines():
+        yield json.dumps({"type": "started", "rounds": DEFAULT_ROUNDS}) + "\n"
+        while (event := events.get()) is not None:
+            yield json.dumps(event) + "\n"
+
+    return StreamingResponse(
+        lines(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _agents(kind: AgentKind) -> tuple[Planner, Adversary]:
+    if kind == "rules":
+        return DemoPlanner(), DemoAdversary()
     providers = providers_from_env()
     if not providers:
         raise HTTPException(
@@ -166,8 +229,15 @@ def run_gemma_loop(scenario: Scenario | None = None) -> Transcript:
             "in backend/.env",
         )
     client = GemmaClient(providers)
-    return _run_big_bend(scenario, GemmaPlanner(client), GemmaAdversary(client))
+    return GemmaPlanner(client), GemmaAdversary(client)
 
 
-def _run_big_bend(scenario: Scenario | None, planner: Planner, adversary: Adversary) -> Transcript:
-    return run_proofloop(big_bend_world(), scenario or BIG_BEND_SCENARIO, planner, adversary)
+def _run_big_bend(
+    scenario: Scenario | None,
+    planner: Planner,
+    adversary: Adversary,
+    on_round: Callable[[Round], None] | None = None,
+) -> Transcript:
+    return run_proofloop(
+        big_bend_world(), scenario or BIG_BEND_SCENARIO, planner, adversary, on_round=on_round
+    )

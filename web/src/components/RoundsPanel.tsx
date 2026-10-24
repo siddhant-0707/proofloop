@@ -1,10 +1,10 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 
 import {
   fetchExposure,
-  runLoop,
+  streamLoop,
   type AgentCall,
   type AgentKind,
   type Plan,
@@ -33,27 +33,50 @@ function useShelterList() {
 export default function RoundsPanel() {
   const [agents, setAgents] = useState<AgentKind>("gemma");
   const [transcript, setTranscript] = useState<Transcript | null>(null);
+  const [liveRounds, setLiveRounds] = useState<Round[]>([]);
+  const [totalRounds, setTotalRounds] = useState(3);
   const [names, setNames] = useState<Record<string, string>>({});
   const [running, setRunning] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const abort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchExposure()
       .then((e) => setNames(Object.fromEntries(e.shelters.map((s) => [s.id, s.name]))))
       .catch(() => {});
+    return () => abort.current?.abort();
   }, []);
 
   async function run() {
+    abort.current?.abort();
+    const controller = new AbortController();
+    abort.current = controller;
     setRunning(true);
+    setStartedAt(Date.now());
     setError(null);
+    setTranscript(null);
+    setLiveRounds([]);
     try {
-      setTranscript(await runLoop(agents));
+      await streamLoop(
+        agents,
+        (event) => {
+          if (event.type === "started") setTotalRounds(event.rounds);
+          else if (event.type === "round") setLiveRounds((rounds) => [...rounds, event.round]);
+          else if (event.type === "transcript") setTranscript(event.transcript);
+          else setError(event.detail);
+        },
+        controller.signal,
+      );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setRunning(false);
+      if (abort.current === controller) setRunning(false);
     }
   }
+
+  const rounds = transcript?.rounds ?? liveRounds;
+  const idle = !running && !transcript && !error;
 
   return (
     <ShelterNames.Provider value={names}>
@@ -83,7 +106,7 @@ export default function RoundsPanel() {
           </p>
         )}
 
-        {!transcript && !error && (
+        {idle && (
           <p className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
             The Planner proposes a plan, the Verifier recomputes its claims, and the Adversary
             knocks out a shelter before the next round. After the last round, one final attack
@@ -91,21 +114,68 @@ export default function RoundsPanel() {
           </p>
         )}
 
-        {transcript && (
+        {(rounds.length > 0 || running) && (
           <ol className="flex flex-col gap-3 overflow-y-auto pb-1">
-            {transcript.rounds.map((round) => (
+            {rounds.map((round) => (
               <RoundCard
                 key={round.index}
                 round={round}
-                recommended={transcript.recommendation?.round_index === round.index}
+                recommended={transcript?.recommendation?.round_index === round.index}
               />
             ))}
-            <FinalAttack transcript={transcript} />
-            <Recommendation transcript={transcript} />
+            {running && !transcript && startedAt !== null && (
+              <Progress
+                agents={agents}
+                done={rounds.length}
+                total={totalRounds}
+                startedAt={startedAt}
+              />
+            )}
+            {transcript && (
+              <>
+                <FinalAttack transcript={transcript} />
+                <Recommendation transcript={transcript} />
+              </>
+            )}
           </ol>
         )}
       </section>
     </ShelterNames.Provider>
+  );
+}
+
+function Progress({
+  agents,
+  done,
+  total,
+  startedAt,
+}: {
+  agents: AgentKind;
+  done: number;
+  total: number;
+  startedAt: number;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const who = agents === "gemma" ? "Gemma 4" : "The rule-based agents";
+  const step =
+    done < total
+      ? `${who} ${agents === "gemma" ? "is" : "are"} planning round ${done + 1} of ${total}`
+      : "Choosing the final attack and the recommendation";
+  return (
+    <li
+      aria-live="polite"
+      className="flex items-center gap-3 rounded-xl border border-dashed border-slate-300 p-3.5 text-sm text-slate-600"
+    >
+      <span className="size-2 shrink-0 animate-pulse rounded-full bg-slate-900" aria-hidden />
+      <span className="flex-1">{step}…</span>
+      <span className="tabular-nums text-xs text-slate-400">
+        {Math.floor((now - startedAt) / 1000)} s
+      </span>
+    </li>
   );
 }
 

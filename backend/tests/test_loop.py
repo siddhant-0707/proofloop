@@ -450,3 +450,30 @@ def test_verifier_reasons_read_as_money_and_whole_people():
         "people_sheltered": "claimed 4, recomputed 2.3",
         "budget": "costs $166,350, budget is $150,000",
     }
+
+
+def test_reports_each_round_as_soon_as_it_completes():
+    world = world_from_map(["A.~.B"], pop=10, shelters={"A": (10, 100), "B": (10, 100)})
+    seen: list[tuple[int, int]] = []  # (round index, rounds the planner had seen so far)
+
+    class CountingPlanner:
+        def __init__(self):
+            self.calls = 0
+
+        def propose(self, world, scenario, history):
+            self.calls += 1
+            return open_plan("A", "B", cost=200, sheltered=10)
+
+    planner = CountingPlanner()
+    transcript = run_proofloop(
+        world,
+        Scenario(budget=1000),
+        planner,
+        ScriptedAdversary([offline("A")]),
+        rounds=3,
+        on_round=lambda round_: seen.append((round_.index, planner.calls)),
+    )
+
+    # Round n is reported right after the planner's n-th call, before the next round starts.
+    assert seen == [(0, 1), (1, 2), (2, 3)]
+    assert transcript.rounds[2].index == 2

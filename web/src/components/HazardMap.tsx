@@ -24,6 +24,15 @@ const TOWNS: [string, number, number][] = [
 
 const SHELTER_COLOR = "#047857";
 
+// The legend card is 18rem wide at the top left; on wide maps, keep the study area clear of it.
+const LEGEND_CLEARANCE = 18 * 16 + 12 + 16;
+
+function fitPadding(element: HTMLElement) {
+  const wide = element.clientWidth >= 2.5 * LEGEND_CLEARANCE;
+  // Shelter labels extend right of their markers, so leave room on the right too.
+  return { top: 16, right: wide ? 120 : 16, bottom: 16, left: wide ? LEGEND_CLEARANCE : 16 };
+}
+
 export default function HazardMap() {
   const container = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState<HazardLayerInfo | null>(null);
@@ -56,7 +65,7 @@ export default function HazardMap() {
               [b.east, b.north],
             ]
           : FLORIDA,
-        fitBoundsOptions: { padding: 16 },
+        fitBoundsOptions: { padding: fitPadding(container.current) },
         attributionControl: { compact: true },
       });
       created.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
