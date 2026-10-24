@@ -1,40 +1,55 @@
-"""Build and cache the Big Bend World from downloaded NISAR granules and Census blocks.
+"""Build and cache the Big Bend World from NISAR granules and Census blocks.
 
-Uses the GCOV flood layer when both frame 16 GCOV granules are fully downloaded,
-otherwise the SME2 fallback. Downloads Census blocks on first run.
+The GCOV flood layer mosaics frames 16 and 17. Each GCOV granule is read from the full
+download when present, otherwise from a crop over the Big Bend fetched once with HTTP
+range requests (a few hundred MB instead of 5 to 7 GB). Falls back to SME2 if a crop
+cannot be fetched. Downloads Census blocks on first run.
 
 uv run python -m proofloop.world.build
 """
 
+import subprocess
+import time
+import urllib.error
+from pathlib import Path
+
 from proofloop.exposure.census import block_files, download_blocks, load_blocks
 from proofloop.exposure.shelters import SHELTER_SITES
-from proofloop.nisar.manifest import GRANULES, Product
+from proofloop.nisar.gcov import read_gcov, write_gcov_crop
+from proofloop.nisar.manifest import GRANULES, Granule, Product
+from proofloop.nisar.remote import RemoteFile, signed_url
 from proofloop.nisar.sme2 import BBox
-from proofloop.paths import RAW_NISAR_DIR, WORLD_CACHE
-from proofloop.world.builder import GranulePair, build_world, with_exposure
+from proofloop.paths import NISAR_CROPS_DIR, RAW_NISAR_DIR, WORLD_CACHE
+from proofloop.world.builder import GCOV_CELL_M, GranulePair, build_world, with_exposure
 from proofloop.world.store import save_world
 
-# Dixie County and coastal Taylor County inside track 148 frame 16, plus Perry to the
-# north, where Taylor County's shelters are. Frame 16 has no radar samples over Perry.
+# Dixie County and Taylor County from the coast north through Perry, where Taylor County's
+# shelters are. Frame 16 covers the coast and Dixie County, frame 17 Perry.
 BIG_BEND = BBox(west=-83.75, south=29.3, east=-82.9, north=30.15)
-FRAME = 16
+FRAMES = (16, 17)
+# Room for the builder's own padding around the bbox.
+CROP_PAD_M = 2 * GCOV_CELL_M
 
 
 def main() -> None:
-    sme2, gcov = _downloaded("SME2"), _downloaded("GCOV")
-    if sme2 is None:
+    sme2 = [_downloaded("SME2", frame) for frame in FRAMES]
+    if any(pair is None for pair in sme2):
         raise SystemExit(
             "missing SME2 granules; run: uv run python -m proofloop.nisar.download --max-priority 1"
         )
-    if gcov is None:
-        print("GCOV granules not downloaded; falling back to SME2 (--max-priority 2 to fetch)")
+    try:
+        gcov = [_gcov_pair(frame) for frame in FRAMES]
+    except (subprocess.CalledProcessError, urllib.error.URLError, OSError) as error:
+        print(f"could not fetch GCOV crops ({error}); falling back to SME2")
+        gcov = []
 
     if not all(p.exists() for p in block_files()):
         print("downloading Census blocks")
         download_blocks()
     blocks = [block for path in block_files() for block in load_blocks(path)]
 
-    world = with_exposure(build_world(BIG_BEND, sme2, gcov), blocks, SHELTER_SITES)
+    pairs = [pair for pair in sme2 if pair is not None]
+    world = with_exposure(build_world(BIG_BEND, pairs, gcov), blocks, SHELTER_SITES)
     save_world(world, WORLD_CACHE)
     rows, cols = world.grid.shape
     affected = world.population[world.hazard.flooded].sum()
@@ -45,16 +60,46 @@ def main() -> None:
     )
 
 
-def _downloaded(product: Product) -> GranulePair | None:
+def _downloaded(product: Product, frame: int) -> GranulePair | None:
     """The frame's before/after pair, or None unless both are completely downloaded."""
     paths = {}
-    for g in GRANULES:
-        if g.product == product and g.frame == FRAME:
-            path = RAW_NISAR_DIR / g.filename
-            if not path.is_file() or path.stat().st_size != g.size_bytes:
-                return None
-            paths[g.epoch] = path
+    for g in _granules(product, frame):
+        if not _is_complete(g):
+            return None
+        paths[g.epoch] = RAW_NISAR_DIR / g.filename
     return GranulePair(before=paths["before"], after=paths["after"])
+
+
+def _gcov_pair(frame: int) -> GranulePair:
+    paths = {g.epoch: _gcov_source(g) for g in _granules("GCOV", frame)}
+    return GranulePair(before=paths["before"], after=paths["after"])
+
+
+def _gcov_source(granule: Granule) -> Path:
+    """The full granule if downloaded, otherwise its Big Bend crop, fetched if missing."""
+    if _is_complete(granule):
+        return RAW_NISAR_DIR / granule.filename
+    b = BIG_BEND
+    crop = NISAR_CROPS_DIR / f"{granule.name}_{b.west}_{b.south}_{b.east}_{b.north}.h5"
+    if not crop.exists():
+        print(f"fetch {granule.name} crop over the Big Bend (range requests)")
+        start = time.monotonic()
+        remote = RemoteFile(signed_url(granule, RAW_NISAR_DIR / ".urs_cookies"))
+        write_gcov_crop(read_gcov(remote, BIG_BEND, CROP_PAD_M, layers=("hh",)), crop)
+        print(
+            f"      {remote.fetched_bytes / 1e6:.0f} MB in {time.monotonic() - start:.0f} s, "
+            f"saved {crop.stat().st_size / 1e6:.0f} MB"
+        )
+    return crop
+
+
+def _granules(product: Product, frame: int) -> list[Granule]:
+    return [g for g in GRANULES if g.product == product and g.frame == frame]
+
+
+def _is_complete(granule: Granule) -> bool:
+    path = RAW_NISAR_DIR / granule.filename
+    return path.is_file() and path.stat().st_size == granule.size_bytes
 
 
 if __name__ == "__main__":

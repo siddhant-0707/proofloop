@@ -27,7 +27,7 @@ machine urs.earthdata.nasa.gov login <user> password <pass>
 ```
 
 ```bash
-# NISAR data (priority 1: soil moisture ~0.4 GB, priority 2: frame 16 backscatter ~9.7 GB)
+# NISAR data (priority 1: soil moisture ~0.4 GB; full backscatter granules are optional)
 cd backend
 uv run python -m proofloop.nisar.download --max-priority 1
 
@@ -36,8 +36,9 @@ uv run python -m proofloop.nisar.download --max-priority 1
 #   OPENROUTER_API_KEY=sk-or-...
 #   GEMINI_API_KEY=...
 
-# Build the cached Big Bend World (GCOV flood layer if downloaded, else SME2; downloads Census
-# blocks on first run), then serve the API on :8000
+# Build the cached Big Bend World, then serve the API on :8000. The GCOV flood layer mosaics
+# frames 16 and 17; any granule not downloaded is read as a Big Bend crop over HTTP range
+# requests (~300 MB each, cached in data/raw/nisar/crops). Census blocks download on first run.
 uv run python -m proofloop.world.build
 uv run uvicorn proofloop.api.app:app --reload
 
@@ -70,7 +71,7 @@ cd web && npx tsc --noEmit && npm run lint
 | Source | Use |
 |---|---|
 | NISAR L3 SME2 (soil moisture + gridded backscatter, 200 m) | Fallback hazard layer, wetting signal |
-| NISAR L2 GCOV (backscatter, 10 m on frame 16, averaged to ~60 m) | Flood extent, including flooding under tree canopy |
+| NISAR L2 GCOV (backscatter, 10 m on frames 16 and 17, averaged to ~60 m) | Flood extent, including flooding under tree canopy |
 | FEMA National Flood Hazard Layer | "Flooded outside the flood zone" |
 | US Census block populations | People affected |
 | County shelter lists | Plan resources |

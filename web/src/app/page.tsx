@@ -11,7 +11,7 @@ export default function Home() {
         </p>
       </header>
       <div className="grid flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="h-[60vh] lg:h-auto">
+        <div className="h-[75vh] lg:sticky lg:top-4 lg:h-[calc(100vh-7rem)] lg:self-start">
           <HazardMap />
         </div>
         <RoundsPanel />

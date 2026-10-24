@@ -58,10 +58,11 @@ GRANULES: tuple[Granule, ...] = (
     Granule("SME2", 16, "after", 75_497_472, 1),
     Granule("SME2", 17, "before", 121_634_816, 1),
     Granule("SME2", 17, "after", 119_537_664, 1),
-    # Priority 2: backscatter for the main study area.
+    # Backscatter. Optional: world.build fetches a Big Bend crop of any granule not downloaded.
+    # Priority 2: Dixie County and the coast.
     Granule("GCOV", 16, "before", 4_857_004_032, 2),
     Granule("GCOV", 16, "after", 4_861_198_336, 2),
-    # Priority 3: inland Taylor County and Tallahassee, only if time allows.
+    # Priority 3: Perry, inland Taylor County and Tallahassee.
     Granule("GCOV", 17, "before", 6_534_725_632, 3),
     Granule("GCOV", 17, "after", 6_526_337_024, 3),
 )
