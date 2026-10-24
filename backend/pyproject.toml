@@ -1,0 +1,30 @@
+[project]
+name = "proofloop"
+version = "0.1.0"
+description = "ProofLoop: stress-tested hurricane response plans, verified against NISAR radar"
+authors = [
+    { name = "Siddhant Chauhan", email = "chauhanjoy10@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "h5py>=3.16.0",
+    "numpy>=2.5.4",
+]
+
+
+[build-system]
+requires = ["uv_build>=0.9.7,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.11.2",
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
