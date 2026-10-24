@@ -4,7 +4,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
 
-import { fetchHazard, type HazardLayerInfo } from "@/lib/api";
+import { fetchExposure, fetchHazard, type ExposureInfo, type HazardLayerInfo } from "@/lib/api";
 
 const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
@@ -19,11 +19,15 @@ const TOWNS: [string, number, number][] = [
   ["Horseshoe Beach", -83.287, 29.441],
   ["Cross City", -83.125, 29.635],
   ["Keaton Beach", -83.591, 29.82],
+  ["Perry", -83.582, 30.117],
 ];
+
+const SHELTER_COLOR = "#047857";
 
 export default function HazardMap() {
   const container = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState<HazardLayerInfo | null>(null);
+  const [exposure, setExposure] = useState<ExposureInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -32,13 +36,15 @@ export default function HazardMap() {
 
     (async () => {
       let hazard: HazardLayerInfo | null = null;
+      let people: ExposureInfo | null = null;
       try {
-        hazard = await fetchHazard();
+        [hazard, people] = await Promise.all([fetchHazard(), fetchExposure()]);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
       if (cancelled || !container.current) return;
       setInfo(hazard);
+      setExposure(people);
 
       const b = hazard?.bounds;
       const created = new maplibregl.Map({
@@ -56,7 +62,7 @@ export default function HazardMap() {
       created.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
       if (hazard) {
         const layer = hazard;
-        created.on("load", () => addLayers(created, layer));
+        created.on("load", () => addLayers(created, layer, people));
       }
       map = created;
     })();
@@ -77,30 +83,97 @@ export default function HazardMap() {
           NISAR L-band, Sep 28 vs Oct 10, 2026
           {info && ` · ${info.method.toUpperCase()} · ${info.flagged_cells.toLocaleString()} cells flagged`}
         </p>
-        <div className="mt-2 flex items-center gap-2">
-          <span className="text-slate-500">Lower</span>
-          <span className="h-2 flex-1 rounded-full bg-gradient-to-r from-[#fdae61] to-[#d7191c]" />
-          <span className="text-slate-500">Higher confidence</span>
-        </div>
-        {error && <p className="mt-2 text-red-600">Hazard layer unavailable: {error}</p>}
+        {info?.open_water_cells != null && info.under_canopy_cells != null ? (
+          <div className="mt-2 space-y-1.5">
+            <FloodKindRamp
+              label="Open water"
+              detail="radar darkened"
+              cells={info.open_water_cells}
+              gradient="from-[#74a9cf] to-[#08519c]"
+            />
+            <FloodKindRamp
+              label="Under tree canopy"
+              detail="radar brightened"
+              cells={info.under_canopy_cells}
+              gradient="from-[#bc96e6] to-[#54278f]"
+            />
+            <p className="text-slate-500">Darker colour = higher confidence</p>
+          </div>
+        ) : (
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-slate-500">Lower</span>
+            <span className="h-2 flex-1 rounded-full bg-gradient-to-r from-[#fdae61] to-[#d7191c]" />
+            <span className="text-slate-500">Higher confidence</span>
+          </div>
+        )}
+        {exposure && (
+          <div className="mt-2 space-y-1.5 border-t border-slate-100 pt-2">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-10 shrink-0 rounded-full bg-gradient-to-r from-[#33415522] to-[#334155cc]" />
+              <span className="text-slate-900">People per km²</span>
+              <span className="text-slate-500">2020 Census blocks</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="flex w-10 shrink-0 justify-center">
+                <span className="h-2.5 w-2.5 rounded-full ring-2 ring-white" style={{ background: SHELTER_COLOR }} />
+              </span>
+              <span className="text-slate-900">Public shelter</span>
+              <span className="text-slate-500">spaces</span>
+            </div>
+            <p className="text-slate-500">
+              {Math.round(exposure.people_in_flooded_cells).toLocaleString()} of{" "}
+              {Math.round(exposure.total_population).toLocaleString()} people live in flagged cells
+            </p>
+          </div>
+        )}
+        {error && <p className="mt-2 text-red-600">Map layers unavailable: {error}</p>}
       </div>
     </div>
   );
 }
 
-function addLayers(map: maplibregl.Map, hazard: HazardLayerInfo) {
+// Colours match KIND_RAMPS in the backend's hazard_image.py.
+function FloodKindRamp(props: { label: string; detail: string; cells: number; gradient: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`h-2 w-10 shrink-0 rounded-full bg-gradient-to-r ${props.gradient}`} />
+      <span className="text-slate-900">{props.label}</span>
+      <span className="text-slate-500">
+        {props.detail} · {props.cells.toLocaleString()} cells
+      </span>
+    </div>
+  );
+}
+
+function addLayers(map: maplibregl.Map, hazard: HazardLayerInfo, exposure: ExposureInfo | null) {
   const { west, south, east, north } = hazard.bounds;
-  map.addSource("hazard", {
-    type: "image",
-    url: hazard.image_url,
-    coordinates: [
-      [west, north],
-      [east, north],
-      [east, south],
-      [west, south],
-    ],
-  });
+  const corners: [[number, number], [number, number], [number, number], [number, number]] = [
+    [west, north],
+    [east, north],
+    [east, south],
+    [west, south],
+  ];
   const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+
+  // Population shares the hazard layer's grid, so the same corners; drawn beneath it.
+  if (exposure) {
+    map.addSource("population", {
+      type: "image",
+      url: exposure.population_image_url,
+      coordinates: corners,
+    });
+    map.addLayer(
+      {
+        id: "population",
+        type: "raster",
+        source: "population",
+        paint: { "raster-resampling": "nearest", "raster-opacity": 0.7 },
+      },
+      firstLabel,
+    );
+  }
+
+  map.addSource("hazard", { type: "image", url: hazard.image_url, coordinates: corners });
   map.addLayer(
     {
       id: "hazard",
@@ -146,6 +219,48 @@ function addLayers(map: maplibregl.Map, hazard: HazardLayerInfo) {
     },
     paint: {
       "text-color": "#0f172a",
+      "text-halo-color": "#ffffff",
+      "text-halo-width": 1.5,
+    },
+  });
+
+  if (!exposure) return;
+  map.addSource("shelters", {
+    type: "geojson",
+    data: {
+      type: "FeatureCollection",
+      features: exposure.shelters.map((s) => ({
+        type: "Feature",
+        properties: { label: `${s.name}\n${Math.round(s.capacity).toLocaleString()} spaces` },
+        geometry: { type: "Point", coordinates: [s.longitude, s.latitude] },
+      })),
+    },
+  });
+  map.addLayer({
+    id: "shelter-dots",
+    type: "circle",
+    source: "shelters",
+    paint: {
+      "circle-radius": 6,
+      "circle-color": SHELTER_COLOR,
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 2,
+    },
+  });
+  map.addLayer({
+    id: "shelter-labels",
+    type: "symbol",
+    source: "shelters",
+    layout: {
+      "text-field": ["get", "label"],
+      "text-font": ["Montserrat Medium"],
+      "text-size": 11,
+      "text-offset": [0.9, 0],
+      "text-anchor": "left",
+      "text-justify": "left",
+    },
+    paint: {
+      "text-color": SHELTER_COLOR,
       "text-halo-color": "#ffffff",
       "text-halo-width": 1.5,
     },

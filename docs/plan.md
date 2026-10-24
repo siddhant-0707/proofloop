@@ -50,3 +50,23 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **SME2 hazard evidence** is the stronger of |HH change| / 6 dB and soil moisture increase / 0.2 m³/m³, clipped to [0, 1].
   Cells at 0.5 or above are flagged.
   Permanent water (water fraction of 0.5 or more) carries no evidence.
+- **GCOV flood layer (#4)** is the primary hazard layer whenever both frame 16 GCOV granules are downloaded; otherwise the World builder falls back to SME2.
+  Frame 16 GCOV is 10 m (EPSG:32617). The builder averages 6 x 6 pixels of HH power into cells of about 60 m to suppress speckle, on a regular lat/lon grid (1392 x 1370 cells over the Big Bend), and sets the travel reach to 83 cells (5 km).
+  Thresholds, all in HH dB, calibrated on the frame 16 pair:
+  - Permanent water: SME2 water fraction of 0.5 or more, or HH of -17 dB or darker before the storm (permanent water has a median of -18.6 dB; land a 1st percentile of -16.3 dB).
+  - Open water: darkening of 3 dB or more (full confidence at 6 dB) where the after pass is -15 dB or darker. Without the darkness check, most darkened cells sat around -10 dB after the storm, which is not water.
+  - Under canopy: brightening of 3 dB or more beyond the median land change (full confidence at 6 dB), only where the before pass was -12 dB or brighter.
+    Land brightened by a median of +1.55 dB (rain-wet soil), so a fixed +3 dB threshold flagged 16% of land.
+    Bare fields that were dark before and brightened (the center pivots east of Cross City) are not double bounce.
+- **GCOV spot checks (frame 16, 2 km boxes around towns):** 1.0% of cells flagged overall (19,342 under canopy, 534 open water).
+  Steinhatchee 4.4% under canopy, Cross City 3.3%, Suwannee 2.8%, Horseshoe Beach 1.1%, all with almost no open water.
+  One day after landfall the radar mostly sees water under the trees, not standing open water, matching the SME2 finding.
+  Keaton Beach is outside the frame 16 swath (no valid samples).
+  The remaining flags are scattered and speckle-like; treat the layer as radar-observed water change with confidence, not a flood map.
+- **Real exposure (#5).** The World's bounding box runs north to 30.15° N so it includes Perry, where Taylor County's shelters are. Frame 16 has no radar samples over Perry, so those cells are never flagged.
+  - **Population:** 2020 Census blocks for Dixie (12029) and Taylor (12123) from TIGERweb, downloaded on the first `world.build`. Each block's population is spread evenly over the 60 m cells whose centers fall inside it; blocks smaller than a cell put everyone in their interior point's cell, and blocks cut by the grid edge keep only the share of their area inside. 35,537 people land on the grid (all of Dixie, 18,655 of Taylor's 21,796); 475 live in flagged cells.
+  - **Shelters:** the four general-population sites in the 2020 Florida Statewide Emergency Shelter Plan, capacity summed over each site's buildings: Dixie County HS (2,558) and Ruth Raines MS (1,523) in Cross City; Taylor County ES (3,503) and Taylor County HS (3,151) in Perry. The plan has no cost to open, so cost is an assumption: $25 per space for a three-day activation.
+  - **Travel reach:** 60 km along the grid (1,000 cells at 60 m), because coastal towns are 30 to 55 km from the shelters. The Cross City shelters reach nearly all 475 affected people; the Perry shelters reach 2.
+  - **Default budget:** $150,000, enough to open two of the four shelters.
+  - **Performance:** the Simulation's reachability search is vectorized and cached per World and shelter, so a Loop on the 1577 x 1370 grid with the rule-based agents takes under 2 s.
+  - **First finding:** losing both Cross City schools leaves almost no affected person within reach of a shelter, so the Adversary's attacks on them decide the run.

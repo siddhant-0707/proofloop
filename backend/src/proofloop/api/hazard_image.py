@@ -1,4 +1,4 @@
-"""Render a World's hazard layer as a georeferenced PNG for a MapLibre image source.
+"""Render a World's hazard and population layers as georeferenced PNGs for MapLibre.
 
 MapLibre stretches an image linearly between its four corners in Web Mercator,
 so rows are resampled from the World's latitude axis onto rows evenly spaced
@@ -11,12 +11,21 @@ import numpy as np
 from PIL import Image
 
 from proofloop.nisar.sme2 import BBox
-from proofloop.world import World
+from proofloop.world import FloodKind, World
 
-# Colour ramp from low to high confidence (RGB), alpha rises with confidence.
+# Colour ramps from low to high confidence (RGB), alpha rises with confidence.
+# Layers that cannot tell flood kinds apart use the hazard ramp. Keep in sync with HazardMap.tsx.
 LOW = np.array([253, 174, 97])
 HIGH = np.array([215, 25, 28])
+KIND_RAMPS = {
+    FloodKind.OPEN_WATER: (np.array([116, 169, 207]), np.array([8, 81, 156])),
+    FloodKind.UNDER_CANOPY: (np.array([188, 150, 230]), np.array([84, 39, 143])),
+}
 MIN_ALPHA, MAX_ALPHA = 110, 220
+# Population density: transparent below 1 person/km^2, most opaque from 1,000.
+POPULATION_RGB = np.array([51, 65, 85])
+POPULATION_MIN_DENSITY = 1.0
+POPULATION_DECADES = 3.0
 
 
 def hazard_bounds(world: World) -> BBox:
@@ -40,8 +49,33 @@ def hazard_png(world: World) -> bytes:
 
     t = np.clip((confidence - 0.5) / 0.5, 0.0, 1.0)[..., None]
     rgb = (LOW + (HIGH - LOW) * t).astype(np.uint8)
+    if world.hazard.kind is not None:
+        kind = world.hazard.kind[rows]
+        for k, (low, high) in KIND_RAMPS.items():
+            rgb[kind == k] = (low + (high - low) * t).astype(np.uint8)[kind == k]
     alpha = np.where(flooded, MIN_ALPHA + (MAX_ALPHA - MIN_ALPHA) * t[..., 0], 0).astype(np.uint8)
 
+    return _png(rgb, alpha)
+
+
+def population_png(world: World) -> bytes:
+    """People per km^2, one colour with opacity rising on a log scale."""
+    bounds = hazard_bounds(world)
+    rows = _mercator_rows(world.grid.latitude, bounds.north, bounds.south)
+    lat, lon = world.grid.latitude, world.grid.longitude
+    dlat = abs(lat[1] - lat[0]) if lat.size > 1 else 0.0
+    dlon = abs(lon[1] - lon[0]) if lon.size > 1 else 0.0
+    cell_km2 = (dlat * 111.32) * (dlon * 111.32 * np.cos(np.radians(lat)))
+    density = (world.population / np.maximum(cell_km2, 1e-9)[:, None])[rows]
+
+    with np.errstate(divide="ignore"):
+        t = np.clip(np.log10(density / POPULATION_MIN_DENSITY) / POPULATION_DECADES, 0.0, 1.0)
+    rgb = np.broadcast_to(POPULATION_RGB, (*density.shape, 3)).astype(np.uint8)
+    alpha = np.where(density >= POPULATION_MIN_DENSITY, 40 + 160 * t, 0).astype(np.uint8)
+    return _png(rgb, alpha)
+
+
+def _png(rgb: np.ndarray, alpha: np.ndarray) -> bytes:
     buffer = io.BytesIO()
     Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA").save(buffer, format="PNG", optimize=True)
     return buffer.getvalue()

@@ -5,6 +5,7 @@ northernmost row and column 0 the westernmost.
 """
 
 from dataclasses import dataclass
+from enum import IntEnum
 
 import numpy as np
 
@@ -19,11 +20,19 @@ class Grid:
         return (self.latitude.size, self.longitude.size)
 
 
+class FloodKind(IntEnum):
+    NONE = 0
+    OPEN_WATER = 1  # backscatter darkened: smooth water surface
+    UNDER_CANOPY = 2  # backscatter brightened: double bounce off water under vegetation
+
+
 @dataclass(frozen=True)
 class HazardLayer:
     flooded: np.ndarray  # (rows, cols) bool
     confidence: np.ndarray  # (rows, cols) float in [0, 1]
-    method: str  # how the layer was derived, e.g. "sme2"
+    method: str  # how the layer was derived, e.g. "sme2" or "gcov"
+    # (rows, cols) uint8 FloodKind per cell, or None when the method cannot tell them apart.
+    kind: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -36,7 +45,8 @@ class Shelter:
     cost: float
 
 
-@dataclass(frozen=True)
+# Compared and hashed by identity, so per-World results (shelter reachability) can be cached.
+@dataclass(frozen=True, eq=False)
 class World:
     grid: Grid
     hazard: HazardLayer
