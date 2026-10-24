@@ -30,3 +30,19 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - Median soil moisture across the frame rose from 0.229 to 0.277 m³/m³ after Isaias.
 - Over Big Bend land, HH backscatter mostly brightened by 1-3 dB (wet soil, flooded vegetation); almost no pixels darkened (0.006%).
 - Conclusion: at 200 m, one day after landfall, open-water flooding is not obvious. The flood layer needs 20 m GCOV and must treat both darkening (open water) and brightening (flooding under canopy) as signals.
+
+## Implementation notes
+
+- **Reachability is computed by the Simulation, not stored in the World.**
+  A flooded cell reaches a shelter through a 4-connected path of dry cells no longer than the World's travel reach.
+  Computing it per Scenario lets future attacks (closed roads) change it without rebuilding the World.
+- **Attacks accumulate, and the Adversary gets a final attack.**
+  Each round's attack is answered by the next round's plan.
+  After the last round the Adversary attacks once more, and no plan answers that final attack.
+  The recommendation is the verified plan that shelters the most people under the final Scenario, with every attack applied, so it has survived an attack it never saw.
+  Ties go to the earlier round.
+- **Agent output is validated before it is used.**
+  Malformed plans or attacks, attacks on unknown shelters, and agent exceptions are recorded in the Transcript with a reason and never crash a run.
+- **SME2 hazard evidence** is the stronger of |HH change| / 6 dB and soil moisture increase / 0.2 m³/m³, clipped to [0, 1].
+  Cells at 0.5 or above are flagged.
+  Permanent water (water fraction of 0.5 or more) carries no evidence.
