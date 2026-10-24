@@ -30,12 +30,22 @@ machine urs.earthdata.nasa.gov login <user> password <pass>
 # NISAR data (priority 1: soil moisture ~0.4 GB, priority 2: frame 16 backscatter ~9.7 GB)
 cd backend
 uv run python -m proofloop.nisar.download --max-priority 1
-uv run pytest
 
-# Web
+# Build the cached Big Bend World, then serve the API on :8000
+uv run python -m proofloop.world.build
+uv run uvicorn proofloop.api.app:app --reload
+
+# Web on :3000 (proxies /api to the backend; override with PROOFLOOP_API)
 cd ../web
 npm install
 npm run dev
+```
+
+Checks:
+
+```bash
+cd backend && uv run pytest && uv run pyright && uv run ruff check . && uv run ruff format --check .
+cd web && npx tsc --noEmit && npm run lint
 ```
 
 ## Data

@@ -39,13 +39,19 @@ class Sme2Grid:
 
 def read_sme2(path: Path, bbox: BBox | None = None) -> Sme2Grid:
     with h5py.File(path, "r") as f:
-        grids = f[_GRIDS]
-        lat = grids["latitude"][()].astype(np.float64)
-        lon = grids["longitude"][()].astype(np.float64)
+        lat = _dataset(f, "latitude")[()].astype(np.float64)
+        lon = _dataset(f, "longitude")[()].astype(np.float64)
         rows = slice(None) if bbox is None else _span(lat, bbox.south, bbox.north)
         cols = slice(None) if bbox is None else _span(lon, bbox.west, bbox.east)
-        layers = {name: _read_layer(grids[key], rows, cols) for name, key in LAYERS.items()}
+        layers = {name: _read_layer(_dataset(f, key), rows, cols) for name, key in LAYERS.items()}
     return Sme2Grid(latitude=lat[rows], longitude=lon[cols], layers=layers)
+
+
+def _dataset(f: h5py.File, key: str) -> h5py.Dataset:
+    node = f[_GRIDS + key]
+    if not isinstance(node, h5py.Dataset):
+        raise ValueError(f"{_GRIDS + key} is not a dataset")
+    return node
 
 
 def _span(axis: np.ndarray, low: float, high: float) -> slice:

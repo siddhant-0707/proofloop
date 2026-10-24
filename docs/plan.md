@@ -10,7 +10,11 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **Study area:** NISAR track 148 ascending, frame 16 (Dixie County and coastal Taylor County). Frame 17 (Perry, Tallahassee) is optional.
 - **Epochs:** before 2026-09-28, after 2026-10-10 (about one day after landfall).
 - **User:** a Taylor or Dixie County emergency manager.
-- **Loop:** Planner and Adversary agents on Gemini 3, 3 rounds, structured JSON output only.
+- **Loop:** Planner and Adversary agents on Gemma 4, 3 rounds plus a final attack, structured JSON output only.
+- **Model hosting:** Gemma 4 26B A4B (`gemma-4-26b-a4b-it`) on the Gemini API, which is free with no paid tier.
+  On a rate-limit error, the same request falls back to OpenRouter's paid `google/gemma-4-26b-a4b-it` (about $0.07 per 1M input and $0.23 per 1M output tokens; under $1 for the whole event).
+  Both providers receive the full JSON schema, and every response is validated against the Plan or Attack schema.
+  API keys live in the backend's `.env` and are never committed.
 - **Scoring:** a small deterministic Python simulation, never an LLM. The Verifier re-runs it on the Planner's claimed numbers.
 - **Hindcast:** plans are scored against the flood extent NISAR actually observed.
 - **Adversary attacks (fixed menu):** shelter offline, road closed, budget cut, and "flooded outside the flood zone" (FEMA NFHL vs. NISAR).
@@ -18,7 +22,7 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **Sources:** a curated pack (FEMA, NHC, county shelter lists). No open web research at runtime.
 - **Demo:** live sliders trigger one re-plan round; a recorded golden run is the fallback.
 - **Stack:** Next.js + MapLibre (web), FastAPI (backend), uv.
-- **Prizes:** overall, Vobile, MLH Best Use of Gemini, MLH Best Open Source (MIT license).
+- **Prizes:** overall, Vobile, MLH Best Use of Gemma, MLH Best Open Source (MIT license).
 
 ## Checkpoints
 
@@ -30,3 +34,19 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - Median soil moisture across the frame rose from 0.229 to 0.277 m³/m³ after Isaias.
 - Over Big Bend land, HH backscatter mostly brightened by 1-3 dB (wet soil, flooded vegetation); almost no pixels darkened (0.006%).
 - Conclusion: at 200 m, one day after landfall, open-water flooding is not obvious. The flood layer needs 20 m GCOV and must treat both darkening (open water) and brightening (flooding under canopy) as signals.
+
+## Implementation notes
+
+- **Reachability is computed by the Simulation, not stored in the World.**
+  A flooded cell reaches a shelter through a 4-connected path of dry cells no longer than the World's travel reach.
+  Computing it per Scenario lets future attacks (closed roads) change it without rebuilding the World.
+- **Attacks accumulate, and the Adversary gets a final attack.**
+  Each round's attack is answered by the next round's plan.
+  After the last round the Adversary attacks once more, and no plan answers that final attack.
+  The recommendation is the verified plan that shelters the most people under the final Scenario, with every attack applied, so it has survived an attack it never saw.
+  Ties go to the earlier round.
+- **Agent output is validated before it is used.**
+  Malformed plans or attacks, attacks on unknown shelters, and agent exceptions are recorded in the Transcript with a reason and never crash a run.
+- **SME2 hazard evidence** is the stronger of |HH change| / 6 dB and soil moisture increase / 0.2 m³/m³, clipped to [0, 1].
+  Cells at 0.5 or above are flagged.
+  Permanent water (water fraction of 0.5 or more) carries no evidence.
