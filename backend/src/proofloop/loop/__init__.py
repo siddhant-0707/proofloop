@@ -49,8 +49,12 @@ def run_proofloop(
     planner: Planner,
     adversary: Adversary,
     rounds: int = DEFAULT_ROUNDS,
+    on_round: Callable[[Round], None] | None = None,
 ) -> Transcript:
-    """Run `rounds` rounds of plan, verify, score and attack, then one final attack."""
+    """Run `rounds` rounds of plan, verify, score and attack, then one final attack.
+
+    `on_round` is called with each Round as soon as it completes, for streaming.
+    """
     history: list[Round] = []
     current = scenario
     final_attack: Attack | None = None
@@ -89,6 +93,8 @@ def run_proofloop(
                 adversary_call=None if last else adversary_call,
             )
         )
+        if on_round:
+            on_round(history[-1])
         if last:
             final_attack, final_adversary_error = attack, adversary_error
             final_adversary_call = adversary_call

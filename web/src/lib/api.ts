@@ -102,11 +102,33 @@ export async function fetchExposure(): Promise<ExposureInfo> {
 
 export type AgentKind = "gemma" | "rules";
 
-export async function runLoop(agents: AgentKind): Promise<Transcript> {
-  const path = agents === "gemma" ? "/api/loop/gemma" : "/api/loop";
-  return json(await fetch(path, { method: "POST" }));
+
+export type LoopEvent =
+  | { type: "started"; rounds: number }
+  | { type: "round"; round: Round }
+  | { type: "transcript"; transcript: Transcript }
+  | { type: "error"; detail: string };
+
+/** Runs the Loop on the server and calls `onEvent` for each event as it arrives. */
+export async function streamLoop(
+  agents: AgentKind,
+  onEvent: (event: LoopEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`/api/loop/stream?agents=${agents}`, { method: "POST", signal });
+  if (!response.ok || !response.body) {
+    throw new Error(`${response.status} ${response.statusText}: ${await response.text()}`);
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) if (line.trim()) onEvent(JSON.parse(line) as LoopEvent);
+  }
+  if (buffer.trim()) onEvent(JSON.parse(buffer) as LoopEvent);
 }
 
-export async function runDemoLoop(): Promise<Transcript> {
-  return json(await fetch("/api/loop/demo", { method: "POST" }));
-}
