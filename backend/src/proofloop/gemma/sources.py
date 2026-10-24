@@ -1,0 +1,53 @@
+"""The curated source pack the Planner may cite. No runtime web search.
+
+Each entry is a short paraphrase with its origin, so citations in a plan's
+rationale can be traced. Add entries only from sources someone has read.
+"""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Source:
+    id: str
+    title: str
+    origin: str
+    summary: str
+
+
+SOURCES: tuple[Source, ...] = (
+    Source(
+        id="S1",
+        title="NISAR radar observation of Hurricane Isaias",
+        origin="NASA-ISRO NISAR L2/L3 provisional products, track 148 frame 16 (ASF DAAC)",
+        summary=(
+            "NISAR imaged the Big Bend on Sep 28 and Oct 10, 2026, about a day after landfall. "
+            "The hazard layer is radar-observed water change with a confidence per cell, "
+            "not an official flood map."
+        ),
+    ),
+    Source(
+        id="S2",
+        title="FEMA, Planning Considerations: Evacuation and Shelter-in-Place (2019)",
+        origin="https://www.fema.gov/media-library/assets/documents/181495",
+        summary=(
+            "Evacuation is not all-or-nothing: a zone-phased approach moves as few people as "
+            "necessary, and people not directly in harm's way can shelter in place, which "
+            "reduces cost, resource needs and the harms of evacuation."
+        ),
+    ),
+    Source(
+        id="S3",
+        title="ProofLoop simulation method",
+        origin="ProofLoop docs/plan.md",
+        summary=(
+            "People in flooded cells are affected. They can reach an open shelter through dry "
+            "cells within a fixed travel distance. Each shelter takes at most its capacity, "
+            "nearest people first, and nobody is counted twice."
+        ),
+    ),
+)
+
+
+def source_pack() -> str:
+    return "\n".join(f"[{s.id}] {s.title} ({s.origin}): {s.summary}" for s in SOURCES)

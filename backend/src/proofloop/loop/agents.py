@@ -5,10 +5,21 @@ Plan and Attack schemas so that malformed model output never crashes a run.
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from proofloop.loop.schemas import Plan, Round, Scenario, SimulationResult
 from proofloop.world import World
+
+
+@dataclass(frozen=True)
+class AgentReply:
+    """Agent output plus which model produced it, for the Transcript."""
+
+    output: Any
+    model: str | None = None
+    provider: str | None = None
+    skipped: list[str] = field(default_factory=list)  # why other providers were not used
 
 
 class Planner(Protocol):

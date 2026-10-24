@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from proofloop.loop import ScriptedAdversary, ScriptedPlanner, run_proofloop
+from proofloop.loop import AgentReply, ScriptedAdversary, ScriptedPlanner, run_proofloop
 from proofloop.loop.schemas import Scenario
 from proofloop.world import Grid, HazardLayer, Shelter, World
 
@@ -349,3 +349,49 @@ def test_an_attack_on_an_unknown_shelter_is_rejected():
     assert first.attack is None
     assert "unknown shelter Z" in first.adversary_error
     assert transcript.rounds[1].scenario == transcript.base_scenario
+
+
+def test_records_which_model_and_provider_answered_each_agent_call():
+    world = world_from_map(["A.~.B"], pop=10, shelters={"A": (10, 100), "B": (10, 100)})
+    reply = AgentReply(
+        output=open_plan("A", cost=100, sheltered=10), provider="gemini", model="gemma-4-26b-a4b-it"
+    )
+
+    transcript = run_proofloop(
+        world,
+        Scenario(budget=1000),
+        ScriptedPlanner([reply]),
+        ScriptedAdversary(
+            [
+                AgentReply(
+                    output=offline("B"),
+                    provider="openrouter",
+                    model="g",
+                    skipped=["gemini: RateLimited: 429"],
+                )
+            ]
+        ),
+        rounds=1,
+    )
+
+    planner_call = transcript.rounds[0].planner_call
+    assert (planner_call.provider, planner_call.model) == ("gemini", "gemma-4-26b-a4b-it")
+    assert planner_call.seconds >= 0
+    assert transcript.final_adversary_call.provider == "openrouter"
+    assert transcript.final_adversary_call.skipped == ["gemini: RateLimited: 429"]
+    assert transcript.recommendation.plan.shelter_ids == ["A"]
+
+
+def test_scripted_agents_without_model_details_are_recorded_as_rule_based():
+    world = world_from_map(["A.~.B"], pop=10, shelters={"A": (10, 100), "B": (10, 100)})
+
+    transcript = run_proofloop(
+        world,
+        Scenario(budget=1000),
+        ScriptedPlanner([open_plan("A", cost=100, sheltered=10)]),
+        ScriptedAdversary([offline("B")]),
+        rounds=2,
+    )
+
+    assert transcript.rounds[0].planner_call.model is None
+    assert transcript.rounds[0].adversary_call.model is None
