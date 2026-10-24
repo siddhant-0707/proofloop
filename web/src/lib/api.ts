@@ -24,24 +24,34 @@ export type Check = {
   reason: string;
 };
 
+export type AgentCall = {
+  model: string | null;
+  provider: string | null;
+  seconds: number;
+  skipped: string[];
+};
+
 export type Round = {
   index: number;
   scenario: Scenario;
   plan: Plan | null;
   planner_error: string | null;
+  planner_call: AgentCall | null;
   verdict: { passed: boolean; checks: Check[] } | null;
   result: SimulationResult | null;
   attack: Attack | null;
   adversary_error: string | null;
+  adversary_call: AgentCall | null;
 };
 
-export type Attack = { type: "shelter_offline"; shelter_id: string };
+export type Attack = { type: "shelter_offline"; shelter_id: string; rationale: string };
 
 export type Transcript = {
   base_scenario: Scenario;
   rounds: Round[];
   final_attack: Attack | null;
   final_adversary_error: string | null;
+  final_adversary_call: AgentCall | null;
   final_scenario: Scenario;
   recommendation: { round_index: number; plan: Plan; result: SimulationResult } | null;
 };
@@ -90,8 +100,11 @@ export async function fetchExposure(): Promise<ExposureInfo> {
   return json(await fetch("/api/exposure"));
 }
 
-export async function runLoop(): Promise<Transcript> {
-  return json(await fetch("/api/loop", { method: "POST" }));
+export type AgentKind = "gemma" | "rules";
+
+export async function runLoop(agents: AgentKind): Promise<Transcript> {
+  const path = agents === "gemma" ? "/api/loop/gemma" : "/api/loop";
+  return json(await fetch(path, { method: "POST" }));
 }
 
 export async function runDemoLoop(): Promise<Transcript> {

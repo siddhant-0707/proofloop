@@ -38,6 +38,16 @@ SOURCES: tuple[Source, ...] = (
     ),
     Source(
         id="S3",
+        title="Florida Statewide Emergency Shelter Plan (2020)",
+        origin="Florida Division of Emergency Management",
+        summary=(
+            "Lists Dixie and Taylor counties' general-population shelters and their capacities: "
+            "Dixie County High School (2,558 spaces) and Ruth Raines Middle School (1,523) in "
+            "Cross City; Taylor County Elementary (3,503) and Taylor County High (3,151) in Perry."
+        ),
+    ),
+    Source(
+        id="S4",
         title="ProofLoop simulation method",
         origin="ProofLoop docs/plan.md",
         summary=(

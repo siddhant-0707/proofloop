@@ -1,4 +1,7 @@
-"""Gemma 4 providers: the Gemini API first, OpenRouter as a paid fallback.
+"""Gemma 4 providers: OpenRouter first, the free Gemini API as a fallback.
+
+On the Gemini API, Gemma 4 with a schema loops on long prompts (repeated words,
+500 errors, RECITATION stops), so it is only the backup.
 
 Both receive the strict JSON schema and return the raw JSON text; the client
 validates it.
@@ -92,8 +95,8 @@ class OpenRouterProvider:
 def providers_from_env() -> list[Provider]:
     """Configured providers in fallback order; keys come from the environment."""
     providers: list[Provider] = []
-    if key := os.environ.get("GEMINI_API_KEY"):
-        providers.append(GeminiProvider(key))
     if key := os.environ.get("OPENROUTER_API_KEY"):
         providers.append(OpenRouterProvider(key))
+    if key := os.environ.get("GEMINI_API_KEY"):
+        providers.append(GeminiProvider(key))
     return providers

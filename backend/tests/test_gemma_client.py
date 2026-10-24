@@ -93,10 +93,11 @@ def test_sends_providers_a_strict_schema_they_can_enforce():
     assert gemini.calls[0]["json_schema"] == {
         "type": "object",
         "properties": {
+            "rationale": {"type": "string", "maxLength": 400},
             "type": {"type": "string", "enum": ["shelter_offline"]},
             "shelter_id": {"type": "string"},
         },
-        "required": ["type", "shelter_id"],
+        "required": ["rationale", "type", "shelter_id"],
         "additionalProperties": False,
     }
 

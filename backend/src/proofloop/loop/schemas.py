@@ -43,6 +43,8 @@ class Plan(_Model):
 
 
 class ShelterOffline(_Model):
+    # Rationale first, as in Plan: the Adversary says why before choosing.
+    rationale: str = Field(default="", max_length=400)
     type: Literal["shelter_offline"] = "shelter_offline"
     shelter_id: str
 

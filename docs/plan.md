@@ -11,9 +11,10 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **Epochs:** before 2026-09-28, after 2026-10-10 (about one day after landfall).
 - **User:** a Taylor or Dixie County emergency manager.
 - **Loop:** Planner and Adversary agents on Gemma 4, 3 rounds plus a final attack, structured JSON output only.
-- **Model hosting:** Gemma 4 26B A4B (`gemma-4-26b-a4b-it`) on the Gemini API, which is free with no paid tier.
-  On a rate-limit error, the same request falls back to OpenRouter's paid `google/gemma-4-26b-a4b-it` (about $0.07 per 1M input and $0.23 per 1M output tokens; under $1 for the whole event).
-  Both providers receive the full JSON schema, and every response is validated against the Plan or Attack schema.
+- **Model hosting:** Gemma 4 26B A4B on OpenRouter (`google/gemma-4-26b-a4b-it`, about $0.07 per 1M input and $0.23 per 1M output tokens; under $1 for the whole event), with the Gemini API (`gemma-4-26b-a4b-it`, free) as the fallback.
+  On the Gemini API, Gemma 4 with a JSON schema looped on the Planner prompt (repeated words, 500 errors, RECITATION stops), so it is only the backup.
+  Both providers receive a strict JSON schema with shelter ids restricted to valid ones, and every response is validated against the Plan or Attack schema.
+  The Planner drafts a plan, code simulates the draft, and Gemma writes its final plan and claims knowing what the draft achieved; the Verifier still checks the final claims.
   API keys live in the backend's `.env` and are never committed.
 - **Scoring:** a small deterministic Python simulation, never an LLM. The Verifier re-runs it on the Planner's claimed numbers.
 - **Hindcast:** plans are scored against the flood extent NISAR actually observed.
