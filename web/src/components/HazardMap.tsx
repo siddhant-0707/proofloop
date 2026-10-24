@@ -89,15 +89,6 @@ const GROUP_LAYERS: Record<LayerGroup, string[]> = {
   shelters: ["shelter-dots", "shelter-labels"],
 };
 
-// The legend card is 18rem wide at the top left; on wide maps, keep the study area clear of it.
-const LEGEND_CLEARANCE = 18 * 16 + 12 + 16;
-
-function fitPadding(element: HTMLElement) {
-  const wide = element.clientWidth >= 2.5 * LEGEND_CLEARANCE;
-  // Shelter labels extend right of their markers, so leave room on the right too.
-  return { top: 16, right: wide ? 120 : 16, bottom: 16, left: wide ? LEGEND_CLEARANCE : 16 };
-}
-
 export default function HazardMap() {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -145,9 +136,6 @@ export default function HazardMap() {
               [b.east, b.north],
             ]
           : FLORIDA,
-<<<<<<< Updated upstream
-        fitBoundsOptions: { padding: fitPadding(container.current) },
-=======
         fitBoundsOptions: { padding: 24 },
         maxBounds: b
           ? [
@@ -161,7 +149,6 @@ export default function HazardMap() {
         pitchWithRotate: false,
         touchPitch: false,
         hash: true,
->>>>>>> Stashed changes
         attributionControl: { compact: true },
       });
       created.touchZoomRotate.disableRotation();

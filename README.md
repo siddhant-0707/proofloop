@@ -31,19 +31,14 @@ machine urs.earthdata.nasa.gov login <user> password <pass>
 cd backend
 uv run python -m proofloop.nisar.download --max-priority 1
 
-<<<<<<< Updated upstream
 # Gemma 4 agents: put API keys in backend/.env (git-ignored). OpenRouter is the primary
 # provider and the Gemini API the fallback; set at least one.
 #   OPENROUTER_API_KEY=sk-or-...
 #   GEMINI_API_KEY=...
 
-# Build the cached Big Bend World (GCOV flood layer if downloaded, else SME2; downloads Census
-# blocks on first run), then serve the API on :8000
-=======
 # Build the cached Big Bend World, then serve the API on :8000. The GCOV flood layer mosaics
 # frames 16 and 17; any granule not downloaded is read as a Big Bend crop over HTTP range
 # requests (~300 MB each, cached in data/raw/nisar/crops). Census blocks download on first run.
->>>>>>> Stashed changes
 uv run python -m proofloop.world.build
 uv run uvicorn proofloop.api.app:app --reload
 

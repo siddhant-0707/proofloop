@@ -13,15 +13,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-<<<<<<< Updated upstream
+import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import StreamingResponse
-=======
-import numpy as np
-from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.gzip import GZipMiddleware
->>>>>>> Stashed changes
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from proofloop.api.hazard_image import hazard_bounds, hazard_png, population_png
