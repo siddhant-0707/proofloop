@@ -3,6 +3,7 @@
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -16,16 +17,17 @@ def save_world(world: World, path: Path) -> None:
         "reach_cells": world.reach_cells,
         "shelters": [asdict(s) for s in world.shelters],
     }
+    arrays: dict[str, Any] = {
+        "latitude": world.grid.latitude,
+        "longitude": world.grid.longitude,
+        "flooded": world.hazard.flooded,
+        "confidence": world.hazard.confidence,
+        "population": world.population,
+    }
+    if world.hazard.kind is not None:
+        arrays["kind"] = world.hazard.kind
     with path.open("wb") as f:
-        np.savez_compressed(
-            f,
-            latitude=world.grid.latitude,
-            longitude=world.grid.longitude,
-            flooded=world.hazard.flooded,
-            confidence=world.hazard.confidence,
-            population=world.population,
-            meta=np.array(json.dumps(meta)),
-        )
+        np.savez_compressed(f, meta=np.array(json.dumps(meta)), **arrays)
 
 
 def load_world(path: Path) -> World:
@@ -34,7 +36,10 @@ def load_world(path: Path) -> World:
         return World(
             grid=Grid(latitude=data["latitude"], longitude=data["longitude"]),
             hazard=HazardLayer(
-                flooded=data["flooded"], confidence=data["confidence"], method=meta["method"]
+                flooded=data["flooded"],
+                confidence=data["confidence"],
+                method=meta["method"],
+                kind=data["kind"] if "kind" in data else None,
             ),
             population=data["population"],
             shelters=tuple(Shelter(**s) for s in meta["shelters"]),

@@ -77,13 +77,44 @@ export default function HazardMap() {
           NISAR L-band, Sep 28 vs Oct 10, 2026
           {info && ` · ${info.method.toUpperCase()} · ${info.flagged_cells.toLocaleString()} cells flagged`}
         </p>
-        <div className="mt-2 flex items-center gap-2">
-          <span className="text-slate-500">Lower</span>
-          <span className="h-2 flex-1 rounded-full bg-gradient-to-r from-[#fdae61] to-[#d7191c]" />
-          <span className="text-slate-500">Higher confidence</span>
-        </div>
+        {info?.open_water_cells != null && info.under_canopy_cells != null ? (
+          <div className="mt-2 space-y-1.5">
+            <FloodKindRamp
+              label="Open water"
+              detail="radar darkened"
+              cells={info.open_water_cells}
+              gradient="from-[#74a9cf] to-[#08519c]"
+            />
+            <FloodKindRamp
+              label="Under tree canopy"
+              detail="radar brightened"
+              cells={info.under_canopy_cells}
+              gradient="from-[#bc96e6] to-[#54278f]"
+            />
+            <p className="text-slate-500">Darker colour = higher confidence</p>
+          </div>
+        ) : (
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-slate-500">Lower</span>
+            <span className="h-2 flex-1 rounded-full bg-gradient-to-r from-[#fdae61] to-[#d7191c]" />
+            <span className="text-slate-500">Higher confidence</span>
+          </div>
+        )}
         {error && <p className="mt-2 text-red-600">Hazard layer unavailable: {error}</p>}
       </div>
+    </div>
+  );
+}
+
+// Colours match KIND_RAMPS in the backend's hazard_image.py.
+function FloodKindRamp(props: { label: string; detail: string; cells: number; gradient: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`h-2 w-10 shrink-0 rounded-full bg-gradient-to-r ${props.gradient}`} />
+      <span className="text-slate-900">{props.label}</span>
+      <span className="text-slate-500">
+        {props.detail} · {props.cells.toLocaleString()} cells
+      </span>
     </div>
   );
 }

@@ -15,7 +15,7 @@ from proofloop.api.hazard_image import hazard_bounds, hazard_png
 from proofloop.loop import Scenario, Transcript, run_proofloop
 from proofloop.loop.demo import DEMO_SCENARIO, DemoAdversary, DemoPlanner, demo_world
 from proofloop.paths import WORLD_CACHE
-from proofloop.world import World
+from proofloop.world import FloodKind, World
 from proofloop.world.store import load_world
 
 app = FastAPI(title="ProofLoop")
@@ -34,6 +34,9 @@ class HazardLayerInfo(BaseModel):
     rows: int
     cols: int
     flagged_cells: int
+    # Null when the hazard method cannot tell open water from flooding under canopy.
+    open_water_cells: int | None
+    under_canopy_cells: int | None
     image_url: str
 
 
@@ -52,12 +55,15 @@ def big_bend_world() -> World:
 def hazard() -> HazardLayerInfo:
     world = big_bend_world()
     rows, cols = world.grid.shape
+    kind = world.hazard.kind
     return HazardLayerInfo(
         method=world.hazard.method,
         bounds=Bounds(**asdict(hazard_bounds(world))),
         rows=rows,
         cols=cols,
         flagged_cells=int(world.hazard.flooded.sum()),
+        open_water_cells=None if kind is None else int((kind == FloodKind.OPEN_WATER).sum()),
+        under_canopy_cells=None if kind is None else int((kind == FloodKind.UNDER_CANOPY).sum()),
         image_url="/api/hazard.png",
     )
 

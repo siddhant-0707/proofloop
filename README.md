@@ -31,7 +31,7 @@ machine urs.earthdata.nasa.gov login <user> password <pass>
 cd backend
 uv run python -m proofloop.nisar.download --max-priority 1
 
-# Build the cached Big Bend World, then serve the API on :8000
+# Build the cached Big Bend World (GCOV flood layer if downloaded, else SME2), then serve the API on :8000
 uv run python -m proofloop.world.build
 uv run uvicorn proofloop.api.app:app --reload
 
@@ -53,7 +53,7 @@ cd web && npx tsc --noEmit && npm run lint
 | Source | Use |
 |---|---|
 | NISAR L3 SME2 (soil moisture + gridded backscatter, 200 m) | Fallback hazard layer, wetting signal |
-| NISAR L2 GCOV (backscatter, ~20 m) | Flood extent, including flooding under tree canopy |
+| NISAR L2 GCOV (backscatter, 10 m on frame 16, averaged to ~60 m) | Flood extent, including flooding under tree canopy |
 | FEMA National Flood Hazard Layer | "Flooded outside the flood zone" |
 | US Census block populations | People affected |
 | County shelter lists | Plan resources |
