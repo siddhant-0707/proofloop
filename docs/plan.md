@@ -50,3 +50,16 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **SME2 hazard evidence** is the stronger of |HH change| / 6 dB and soil moisture increase / 0.2 m³/m³, clipped to [0, 1].
   Cells at 0.5 or above are flagged.
   Permanent water (water fraction of 0.5 or more) carries no evidence.
+- **GCOV flood layer (#4)** is the primary hazard layer whenever both frame 16 GCOV granules are downloaded; otherwise the World builder falls back to SME2.
+  Frame 16 GCOV is 10 m (EPSG:32617). The builder averages 6 x 6 pixels of HH power into cells of about 60 m to suppress speckle, on a regular lat/lon grid (1392 x 1370 cells over the Big Bend), and sets the travel reach to 83 cells (5 km).
+  Thresholds, all in HH dB, calibrated on the frame 16 pair:
+  - Permanent water: SME2 water fraction of 0.5 or more, or HH of -17 dB or darker before the storm (permanent water has a median of -18.6 dB; land a 1st percentile of -16.3 dB).
+  - Open water: darkening of 3 dB or more (full confidence at 6 dB) where the after pass is -15 dB or darker. Without the darkness check, most darkened cells sat around -10 dB after the storm, which is not water.
+  - Under canopy: brightening of 3 dB or more beyond the median land change (full confidence at 6 dB), only where the before pass was -12 dB or brighter.
+    Land brightened by a median of +1.55 dB (rain-wet soil), so a fixed +3 dB threshold flagged 16% of land.
+    Bare fields that were dark before and brightened (the center pivots east of Cross City) are not double bounce.
+- **GCOV spot checks (frame 16, 2 km boxes around towns):** 1.0% of cells flagged overall (19,342 under canopy, 534 open water).
+  Steinhatchee 4.4% under canopy, Cross City 3.3%, Suwannee 2.8%, Horseshoe Beach 1.1%, all with almost no open water.
+  One day after landfall the radar mostly sees water under the trees, not standing open water, matching the SME2 finding.
+  Keaton Beach is outside the frame 16 swath (no valid samples).
+  The remaining flags are scattered and speckle-like; treat the layer as radar-observed water change with confidence, not a flood map.

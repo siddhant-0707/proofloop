@@ -52,6 +52,9 @@ export type HazardLayerInfo = {
   rows: number;
   cols: number;
   flagged_cells: number;
+  // Null when the hazard method cannot tell open water from flooding under canopy.
+  open_water_cells: number | null;
+  under_canopy_cells: number | null;
   image_url: string;
 };
 

@@ -1,12 +1,15 @@
-"""Build and cache the Big Bend World from downloaded NISAR SME2 granules.
+"""Build and cache the Big Bend World from downloaded NISAR granules.
+
+Uses the GCOV flood layer when both frame 16 GCOV granules are fully downloaded,
+otherwise the SME2 fallback.
 
 uv run python -m proofloop.world.build
 """
 
-from proofloop.nisar.manifest import GRANULES
+from proofloop.nisar.manifest import GRANULES, Product
 from proofloop.nisar.sme2 import BBox
 from proofloop.paths import RAW_NISAR_DIR, WORLD_CACHE
-from proofloop.world.builder import build_world_from_sme2
+from proofloop.world.builder import GranulePair, build_world
 from proofloop.world.store import save_world
 
 # Dixie County and coastal Taylor County, inside track 148 frame 16.
@@ -15,21 +18,33 @@ FRAME = 16
 
 
 def main() -> None:
-    sme2 = {
-        g.epoch: RAW_NISAR_DIR / g.filename
-        for g in GRANULES
-        if g.product == "SME2" and g.frame == FRAME
-    }
-    missing = [p.name for p in sme2.values() if not p.exists()]
-    if missing:
+    sme2, gcov = _downloaded("SME2"), _downloaded("GCOV")
+    if sme2 is None:
         raise SystemExit(
-            f"missing {missing}; run: uv run python -m proofloop.nisar.download --max-priority 1"
+            "missing SME2 granules; run: uv run python -m proofloop.nisar.download --max-priority 1"
         )
+    if gcov is None:
+        print("GCOV granules not downloaded; falling back to SME2 (--max-priority 2 to fetch)")
 
-    world = build_world_from_sme2(sme2["before"], sme2["after"], BIG_BEND)
+    world = build_world(BIG_BEND, sme2, gcov)
     save_world(world, WORLD_CACHE)
     rows, cols = world.grid.shape
-    print(f"wrote {WORLD_CACHE} ({rows}x{cols} cells, {int(world.hazard.flooded.sum())} flagged)")
+    print(
+        f"wrote {WORLD_CACHE} ({world.hazard.method}, {rows}x{cols} cells, "
+        f"{int(world.hazard.flooded.sum())} flagged)"
+    )
+
+
+def _downloaded(product: Product) -> GranulePair | None:
+    """The frame's before/after pair, or None unless both are completely downloaded."""
+    paths = {}
+    for g in GRANULES:
+        if g.product == product and g.frame == FRAME:
+            path = RAW_NISAR_DIR / g.filename
+            if not path.is_file() or path.stat().st_size != g.size_bytes:
+                return None
+            paths[g.epoch] = path
+    return GranulePair(before=paths["before"], after=paths["after"])
 
 
 if __name__ == "__main__":

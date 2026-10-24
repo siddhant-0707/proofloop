@@ -11,11 +11,16 @@ import numpy as np
 from PIL import Image
 
 from proofloop.nisar.sme2 import BBox
-from proofloop.world import World
+from proofloop.world import FloodKind, World
 
-# Colour ramp from low to high confidence (RGB), alpha rises with confidence.
+# Colour ramps from low to high confidence (RGB), alpha rises with confidence.
+# Layers that cannot tell flood kinds apart use the hazard ramp. Keep in sync with HazardMap.tsx.
 LOW = np.array([253, 174, 97])
 HIGH = np.array([215, 25, 28])
+KIND_RAMPS = {
+    FloodKind.OPEN_WATER: (np.array([116, 169, 207]), np.array([8, 81, 156])),
+    FloodKind.UNDER_CANOPY: (np.array([188, 150, 230]), np.array([84, 39, 143])),
+}
 MIN_ALPHA, MAX_ALPHA = 110, 220
 
 
@@ -40,6 +45,10 @@ def hazard_png(world: World) -> bytes:
 
     t = np.clip((confidence - 0.5) / 0.5, 0.0, 1.0)[..., None]
     rgb = (LOW + (HIGH - LOW) * t).astype(np.uint8)
+    if world.hazard.kind is not None:
+        kind = world.hazard.kind[rows]
+        for k, (low, high) in KIND_RAMPS.items():
+            rgb[kind == k] = (low + (high - low) * t).astype(np.uint8)[kind == k]
     alpha = np.where(flooded, MIN_ALPHA + (MAX_ALPHA - MIN_ALPHA) * t[..., 0], 0).astype(np.uint8)
 
     buffer = io.BytesIO()
