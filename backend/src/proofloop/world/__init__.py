@@ -45,7 +45,8 @@ class Shelter:
     cost: float
 
 
-@dataclass(frozen=True)
+# Compared and hashed by identity, so per-World results (shelter reachability) can be cached.
+@dataclass(frozen=True, eq=False)
 class World:
     grid: Grid
     hazard: HazardLayer

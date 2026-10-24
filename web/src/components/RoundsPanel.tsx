@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 
 import {
-  runDemoLoop,
+  fetchExposure,
+  runLoop,
   type Plan,
   type Round,
   type SimulationResult,
@@ -12,19 +13,38 @@ import {
 
 const people = (n: number) => Math.round(n).toLocaleString();
 const dollars = (n: number) => `$${Math.round(n).toLocaleString()}`;
-const shelterList = (ids: string[]) => (ids.length ? ids.join(", ") : "none");
 const shelterIds = (plan: Plan) => [...new Set(plan.actions.map((a) => a.shelter_id))];
+
+// Shelter id -> display name; falls back to the id until shelters load.
+const ShelterNames = createContext<Record<string, string>>({});
+
+function useShelterName() {
+  const names = useContext(ShelterNames);
+  return (id: string) => names[id] ?? id;
+}
+
+function useShelterList() {
+  const name = useShelterName();
+  return (ids: string[]) => (ids.length ? ids.map(name).join(", ") : "none");
+}
 
 export default function RoundsPanel() {
   const [transcript, setTranscript] = useState<Transcript | null>(null);
+  const [names, setNames] = useState<Record<string, string>>({});
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchExposure()
+      .then((e) => setNames(Object.fromEntries(e.shelters.map((s) => [s.id, s.name]))))
+      .catch(() => {});
+  }, []);
 
   async function run() {
     setRunning(true);
     setError(null);
     try {
-      setTranscript(await runDemoLoop());
+      setTranscript(await runLoop());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -33,55 +53,61 @@ export default function RoundsPanel() {
   }
 
   return (
-    <section className="flex h-full flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold text-slate-900">Stress test</h2>
-          <p className="text-xs text-slate-500">
-            Fictional demo county with rule-based agents
-            {transcript && `. Budget ${dollars(transcript.base_scenario.budget)}`}.
-          </p>
+    <ShelterNames.Provider value={names}>
+      <section className="flex h-full flex-col gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Stress test</h2>
+            <p className="text-xs text-slate-500">
+              Dixie and Taylor counties, 4 public shelters, rule-based agents
+              {transcript && `. Budget ${dollars(transcript.base_scenario.budget)}`}.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={run}
+            disabled={running}
+            className="shrink-0 rounded-lg bg-slate-900 px-3.5 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-wait disabled:opacity-60"
+          >
+            {running ? "Running…" : transcript ? "Run again" : "Run stress test"}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={run}
-          disabled={running}
-          className="shrink-0 rounded-lg bg-slate-900 px-3.5 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-wait disabled:opacity-60"
-        >
-          {running ? "Running…" : transcript ? "Run again" : "Run stress test"}
-        </button>
-      </div>
 
-      {error && (
-        <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700 ring-1 ring-red-200">{error}</p>
-      )}
+        {error && (
+          <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700 ring-1 ring-red-200">
+            {error}
+          </p>
+        )}
 
-      {!transcript && !error && (
-        <p className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-          The Planner proposes a plan, the Verifier recomputes its claims, and the Adversary knocks
-          out a shelter before the next round. After the last round, one final attack decides which
-          plan to recommend.
-        </p>
-      )}
+        {!transcript && !error && (
+          <p className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
+            The Planner proposes a plan, the Verifier recomputes its claims, and the Adversary
+            knocks out a shelter before the next round. After the last round, one final attack
+            decides which plan to recommend.
+          </p>
+        )}
 
-      {transcript && (
-        <ol className="flex flex-col gap-3 overflow-y-auto pb-1">
-          {transcript.rounds.map((round) => (
-            <RoundCard
-              key={round.index}
-              round={round}
-              recommended={transcript.recommendation?.round_index === round.index}
-            />
-          ))}
-          <FinalAttack transcript={transcript} />
-          <Recommendation transcript={transcript} />
-        </ol>
-      )}
-    </section>
+        {transcript && (
+          <ol className="flex flex-col gap-3 overflow-y-auto pb-1">
+            {transcript.rounds.map((round) => (
+              <RoundCard
+                key={round.index}
+                round={round}
+                recommended={transcript.recommendation?.round_index === round.index}
+              />
+            ))}
+            <FinalAttack transcript={transcript} />
+            <Recommendation transcript={transcript} />
+          </ol>
+        )}
+      </section>
+    </ShelterNames.Provider>
   );
 }
 
 function RoundCard({ round, recommended }: { round: Round; recommended: boolean }) {
+  const shelterList = useShelterList();
+  const shelterName = useShelterName();
   const failed = round.verdict?.checks.filter((c) => !c.passed) ?? [];
   return (
     <li className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
@@ -123,7 +149,7 @@ function RoundCard({ round, recommended }: { round: Round; recommended: boolean 
       {round.adversary_error && <ErrorLine label="Adversary" message={round.adversary_error} />}
       {round.attack && (
         <p className="mt-2 border-t border-slate-100 pt-2 text-xs text-amber-700">
-          <span className="font-medium">Attack:</span> shelter {round.attack.shelter_id} goes
+          <span className="font-medium">Attack:</span> {shelterName(round.attack.shelter_id)} goes
           offline
         </p>
       )}
@@ -151,19 +177,21 @@ function Score({ result }: { result: SimulationResult }) {
 }
 
 function FinalAttack({ transcript }: { transcript: Transcript }) {
+  const shelterName = useShelterName();
   if (transcript.final_adversary_error) {
     return <ErrorLine label="Adversary" message={transcript.final_adversary_error} />;
   }
   if (!transcript.final_attack) return null;
   return (
     <li className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-800">
-      <span className="font-semibold">Final attack:</span> shelter{" "}
-      {transcript.final_attack.shelter_id} goes offline. No plan gets to answer it.
+      <span className="font-semibold">Final attack:</span>{" "}
+      {shelterName(transcript.final_attack.shelter_id)} goes offline. No plan gets to answer it.
     </li>
   );
 }
 
 function Recommendation({ transcript }: { transcript: Transcript }) {
+  const shelterList = useShelterList();
   const rec = transcript.recommendation;
   return (
     <li className="rounded-xl bg-slate-900 p-3.5 text-white">
