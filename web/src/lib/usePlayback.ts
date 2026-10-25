@@ -10,6 +10,7 @@ const SHOWN_MS: Record<Beat["kind"], number> = {
   verdict: 3_000,
   attack: 5_000,
   reroute: 4_000,
+  backup: 5_000,
   note: 3_000,
 };
 

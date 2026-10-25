@@ -15,7 +15,7 @@ import {
 } from "@/lib/api";
 import type { Beat } from "@/lib/storyboard";
 
-const BASEMAP = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
 // Shown only if the hazard layer, which defines the study area, cannot be loaded.
 const FLORIDA: [[number, number], [number, number]] = [
@@ -34,9 +34,9 @@ const TOWNS: [string, number, number][] = [
 
 // Keep in sync with OPEN_WATER_SURFACE / CANOPY_SURFACE in hazard_image.py (deepest stop).
 const KIND_COLORS: Record<number, string> = {
-  0: "#38bdf8", // flagged, kind unknown (SME2 fallback): drawn as open water when zoomed out
-  1: "#93c5fd", // open water
-  2: "#22d3ee", // under canopy
+  0: "#2563eb", // flagged, kind unknown (SME2 fallback): drawn as open water when zoomed out
+  1: "#1e3a8a", // open water
+  2: "#0369a1", // under canopy
 };
 // Zoomed out, the smoothed flood surface; from here in, each flagged 60 m cell.
 const CELLS_MINZOOM = 13.5;
@@ -49,17 +49,17 @@ const KIND_LABELS: Record<number, string> = {
   1: "Open water (radar darkened)",
   2: "Flooding under tree canopy (radar brightened)",
 };
-const SHELTER_COLOR = "#34d399";
-const TOWN_COLOR = "#f1f5f9";
-// Behind every label on the dark basemap.
-const HALO = "#0b1120";
+const SHELTER_COLOR = "#047857";
+const TOWN_COLOR = "#0f172a";
+// Behind every label on the light basemap.
+const HALO = "#ffffff";
 const TOWN_RADIUS = 3.5;
 const PEOPLE_RING = "#f59e0b";
 // Keep in sync with FEMA_ZONE_RGB / FEMA_ZONE_ALPHA in hazard_image.py.
 const FEMA_ZONE_TINT = "rgba(20, 184, 166, 0.27)";
 // The legend's version of the flood surface: faint canopy to deep open water.
 // Keep in sync with OPEN_WATER_SURFACE / CANOPY_SURFACE in hazard_image.py.
-const SURFACE_GRADIENT = "rgba(8, 145, 178, 0.45), rgba(34, 211, 238, 0.7), #38bdf8, #93c5fd";
+const SURFACE_GRADIENT = "rgba(125, 211, 252, 0.45), rgba(3, 105, 161, 0.7), #60a5fa, #1e3a8a";
 // The start card's height on a narrow screen, plus a gap.
 const START_CARD_HEIGHT = 420;
 
@@ -91,8 +91,7 @@ export default function HazardMap({
   const [error, setError] = useState<string | null>(null);
   const [visible, setVisible] = useState<Record<LayerGroup, boolean>>({
     flooding: true,
-    // Context only, and it tints most of the area: off until asked for.
-    fema: false,
+    fema: true,
     population: false,
     shelters: true,
   });
@@ -290,7 +289,7 @@ export default function HazardMap({
   const toggle = (group: LayerGroup) => setVisible((v) => ({ ...v, [group]: !v[group] }));
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-slate-900">
+    <div className="relative h-full w-full overflow-hidden bg-slate-100">
       {/* Sized directly: maplibre-gl.css forces position: relative on the map container. */}
       <div ref={container} className="h-full w-full" />
 
@@ -583,7 +582,7 @@ function addBeatLayers(map: maplibregl.Map) {
       "text-rotation-alignment": "viewport",
       "text-allow-overlap": true,
     },
-    paint: { "text-color": "#fcd34d", "text-halo-color": HALO, "text-halo-width": 2 },
+    paint: { "text-color": "#78350f", "text-halo-color": "#fffbeb", "text-halo-width": 2 },
   });
 }
 

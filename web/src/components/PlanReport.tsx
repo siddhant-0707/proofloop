@@ -38,6 +38,11 @@ const SECTIONS_IN: Partial<Record<PrintPart, string[]>> = {
 /** True inside the PDF view: every case is listed and buttons are left out. */
 const Printing = createContext(false);
 
+/** Set beside the map: the stress case replaying on it, and how to replay another. */
+const Replay = createContext<{ replaying: StressCase | null; onReplay: (c: StressCase) => void } | null>(
+  null,
+);
+
 /** A plan that was drafted for the same conditions but not chosen. */
 export type Alternative = {
   key: string;
@@ -132,10 +137,14 @@ export default function PlanReport({
   transcript,
   previous,
   onDownload,
+  replaying,
+  onReplay,
 }: {
   transcript: Transcript;
   previous: Transcript | null;
   onDownload: (plan: Alternative) => void;
+  replaying: StressCase | null;
+  onReplay: (c: StressCase) => void;
 }) {
   const [tab, setTab] = useState<Tab>("final");
   const others = alternatives(transcript, previous);
@@ -155,7 +164,9 @@ export default function PlanReport({
         {tab === "others" && others.length > 0 ? (
           <OtherPlans others={others} onDownload={onDownload} />
         ) : (
-          <FinalPlan transcript={transcript} />
+          <Replay.Provider value={{ replaying, onReplay }}>
+            <FinalPlan transcript={transcript} />
+          </Replay.Provider>
         )}
       </div>
     </section>
@@ -678,9 +689,10 @@ function Contingencies({ rec }: { rec: Recommendation }) {
       )}
       {combined && combined.attacks.length > 1 && (
         <div>
-          <p className="font-medium text-slate-900">
-            Worst case: all of these at once
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-medium text-slate-900">Worst case: all of these at once</p>
+            <ReplayButton c={combined} />
+          </div>
           <Lines lines={combined.attacks.map((a) => sentence(describeAttack(a, name)))} />
           <p className="mt-1">
             With all of them, the plan shelters {people(combined.result.people_sheltered)} of{" "}
@@ -757,10 +769,13 @@ function StressCases({ cases, plan }: { cases: StressCase[]; plan: Action[] }) {
         const bar = pct < 50 ? "bg-red-500" : pct < 100 ? "bg-amber-500" : "bg-emerald-500";
         return (
           <li key={what} className="break-inside-avoid text-xs text-slate-600">
-            <div className="flex justify-between gap-2">
+            <div className="flex items-start justify-between gap-2">
               <span>{what}</span>
-              <span className="shrink-0 tabular-nums">
-                {people(c.result.people_sheltered)} of {people(c.result.people_affected)} · {pct}%
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="tabular-nums">
+                  {people(c.result.people_sheltered)} of {people(c.result.people_affected)} · {pct}%
+                </span>
+                <ReplayButton c={c} />
               </span>
             </div>
             <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-slate-100">
@@ -771,6 +786,28 @@ function StressCases({ cases, plan }: { cases: StressCase[]; plan: Action[] }) {
         );
       })}
     </ul>
+  );
+}
+
+/** Plays the case on the map: what fails, where people go, then its backup plan. */
+function ReplayButton({ c }: { c: StressCase }) {
+  const replay = useContext(Replay);
+  if (!replay || !c.briefing) return null;
+  const playing = replay.replaying === c;
+  return (
+    <button
+      type="button"
+      onClick={() => replay.onReplay(c)}
+      aria-pressed={playing}
+      className={`flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium transition print:hidden ${
+        playing ? "bg-sky-600 text-white" : "text-sky-700 ring-1 ring-sky-200 hover:bg-sky-50"
+      }`}
+    >
+      <svg viewBox="0 0 12 12" className="size-2.5" aria-hidden>
+        <path d="M3 1.5v9l7.5-4.5z" fill="currentColor" />
+      </svg>
+      {playing ? "On map" : "Show on map"}
+    </button>
   );
 }
 

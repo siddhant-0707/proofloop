@@ -29,10 +29,10 @@ SURFACE_SIGMA = 4.0
 SURFACE_THRESHOLD = 0.02
 SURFACE_FULL = 0.12
 SURFACE_MIN_ALPHA = 60
-# (faintest, strongest, most opaque) per kind, for a dark basemap: stronger evidence is
-# brighter. Open water is the brightest and most opaque. Keep in sync with HazardMap.tsx.
-OPEN_WATER_SURFACE = (np.array([56, 189, 248]), np.array([147, 197, 253]), 235)
-CANOPY_SURFACE = (np.array([8, 145, 178]), np.array([34, 211, 238]), 175)
+# (faintest, strongest, most opaque) per kind, for a light basemap: stronger evidence is
+# deeper. Open water is the deepest and most opaque. Keep in sync with HazardMap.tsx.
+OPEN_WATER_SURFACE = (np.array([96, 165, 250]), np.array([30, 58, 138]), 235)
+CANOPY_SURFACE = (np.array([125, 211, 252]), np.array([3, 105, 161]), 175)
 # Population density: transparent below 1 person/km^2, most opaque from 1,000.
 POPULATION_RGB = np.array([51, 65, 85])
 POPULATION_MIN_DENSITY = 1.0
@@ -78,7 +78,7 @@ def flood_surface_png(world: World) -> bytes:
     Flagged cells' confidence is blurred over a few cells, separately for open water
     and for flooding under canopy, and drawn where the blurred evidence clears
     SURFACE_THRESHOLD: lone speckles fade out and clusters read as water. Open water
-    is bright blue and nearly opaque; under canopy is darker cyan and never as opaque,
+    is deep blue and nearly opaque; under canopy is a lighter sky blue and never as opaque,
     so it always reads fainter. A method that cannot tell kinds apart draws everything
     as open water. The Simulation still uses the binary flagged cells.
     """

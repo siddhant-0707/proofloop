@@ -240,11 +240,15 @@ class Backup(_Model):
 
     actions: list[Action]
     result: SimulationResult
+    # Where people go under the case's failures with this plan instead.
+    briefing: Briefing | None = None
 
 
 class StressCase(_Model):
     attacks: list[Attack]
     result: SimulationResult
+    # Where people go under these failures with the plan.
+    briefing: Briefing | None = None
     # Set when a backup plan shelters more people under these failures than the plan does.
     backup: Backup | None = None
 

@@ -10,6 +10,7 @@ should ride out; pairs are major trouble, reported but never held against a plan
 from collections.abc import Sequence
 from itertools import combinations
 
+from proofloop.loop.briefing import brief
 from proofloop.loop.schemas import (
     Attack,
     BudgetCut,
@@ -20,19 +21,23 @@ from proofloop.loop.schemas import (
     StressCase,
     StressTest,
 )
-from proofloop.loop.simulation import affected_people, simulate
+from proofloop.loop.simulation import affected_people, simulate, trace
 from proofloop.world import World
 
 BUDGET_CUTS = (10.0, 25.0, 50.0)
 
 
 def stress_test(world: World, base: Scenario, plan: Plan) -> StressTest:
-    cases = [
-        StressCase(attacks=attacks, result=simulate(world, apply_all(base, attacks), plan))
-        for attacks in stress_cases(world, base, plan)
-    ]
+    cases = [stress_case(world, base, plan, attacks) for attacks in stress_cases(world, base, plan)]
     cases.sort(key=lambda c: (c.result.robustness, len(c.attacks)))
     return StressTest(cases=cases)
+
+
+def stress_case(world: World, base: Scenario, plan: Plan, attacks: list[Attack]) -> StressCase:
+    """The plan under `attacks`: its score, and where people go."""
+    hit = apply_all(base, attacks)
+    traced = trace(world, hit, plan)
+    return StressCase(attacks=attacks, result=traced.result, briefing=brief(world, hit, traced))
 
 
 def typical(world: World, base: Scenario, plan: Plan) -> float:

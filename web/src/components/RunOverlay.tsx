@@ -85,6 +85,66 @@ export function RunStage({
   );
 }
 
+/** A stress case replaying on the map beside the report: the counter along the top, and a
+ * caption bar with one segment per beat and a reset to the plan as planned. */
+export function ReplayStage({
+  beats,
+  playback,
+  onReset,
+}: {
+  beats: Beat[];
+  playback: Playback;
+  onReset: () => void;
+}) {
+  const { beat } = playback;
+  const shown = beat ? beats.indexOf(beat) : -1;
+  return (
+    <>
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-start p-3 pr-12 xl:justify-center">
+        <RunFigures figures={beat?.figures ?? null} />
+      </div>
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center p-3">
+        <div className="pointer-events-auto w-full max-w-xl overflow-hidden rounded-2xl bg-slate-950/85 text-white shadow-2xl ring-1 ring-white/10 backdrop-blur-md">
+          <div className="flex gap-1 px-4 pt-3" aria-hidden>
+            {beats.map((b, i) => (
+              <span
+                key={i}
+                className={`h-1 flex-1 rounded-full transition-colors duration-500 ${
+                  i < shown || (i === shown && playback.finished)
+                    ? "bg-gradient-to-r from-sky-400 to-emerald-400"
+                    : i === shown
+                      ? "animate-pulse bg-sky-400/60"
+                      : "bg-white/10"
+                }`}
+              />
+            ))}
+          </div>
+          <div className="px-4 pt-2.5 pb-3">
+            <div className="flex items-center gap-3">
+              <p className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.18em] text-sky-300">
+                When things go wrong
+              </p>
+              {beat && <BeatStamp key={beat.caption} beat={beat} />}
+              <button
+                type="button"
+                onClick={onReset}
+                className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium text-white ring-1 ring-white/20 transition hover:bg-white/10"
+              >
+                Reset
+              </button>
+            </div>
+            {beat && (
+              <p key={beat.caption} className="mt-1.5 animate-rise text-sm text-white">
+                {beat.caption}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 /** One segment per round, then one for the report: done, playing (pulsing) or to come. */
 function Steps({ run, playback }: { run: LoopRun; playback: Playback }) {
   const rounds = plannedRounds(run);
@@ -113,18 +173,24 @@ function Steps({ run, playback }: { run: LoopRun; playback: Playback }) {
   );
 }
 
-/** Lands on the caption bar: the Verifier's verdict, the Adversary's attack, or the reroute. */
+/** Lands on the caption bar: the Verifier's verdict, the Adversary's attack (a failure, in a
+ * replay outside the run), the reroute, or the backup plan. */
 function BeatStamp({ beat }: { beat: Beat }) {
   if (beat.kind === "attack") {
     return (
       <Stamp className="bg-red-500/15 text-red-300 ring-1 ring-red-400/60">
         <span className="size-1.5 animate-pulse rounded-full bg-red-400" aria-hidden />
-        Attack
+        {beat.round ? "Attack" : "Failure"}
       </Stamp>
     );
   }
   if (beat.kind === "reroute") {
     return <Stamp className="bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/60">Rerouted</Stamp>;
+  }
+  if (beat.kind === "backup") {
+    return (
+      <Stamp className="bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/60">Backup plan</Stamp>
+    );
   }
   if (!beat.verdict) return null;
   return beat.verdict.passed ? (

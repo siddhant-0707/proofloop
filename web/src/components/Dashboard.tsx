@@ -16,17 +16,27 @@ import PlanReport, {
 import PlanSetup from "@/components/PlanSetup";
 import {
   BudgetQuestion,
+  ReplayStage,
   RunError,
   RunStage,
   RunVeil,
   budgetShortfall,
 } from "@/components/RunOverlay";
-import { DEFAULT_SCENARIO, type AgentKind, type Scenario, type Transcript } from "@/lib/api";
+import {
+  DEFAULT_SCENARIO,
+  type AgentKind,
+  type Scenario,
+  type StressCase,
+  type Transcript,
+} from "@/lib/api";
 import { dollars } from "@/lib/format";
 import { PlacesProvider, usePlaceName, usePlaces } from "@/lib/places";
-import { roundBeats } from "@/lib/storyboard";
+import { finalPlanBeat, roundBeats, stressBeats } from "@/lib/storyboard";
 import { useLoopRun } from "@/lib/useLoopRun";
 import { usePlayback } from "@/lib/usePlayback";
+
+// Longer than the map's 1.6 s move to frame a beat.
+const REPLAY_RESET_MS = 2_000;
 
 /** Three screens over one map: choose what to plan, watch the run, read the plan report. */
 export default function Dashboard() {
@@ -53,6 +63,8 @@ function Screens() {
     return run.rounds.flatMap((r) => roundBeats(r, places));
   }, [run.rounds, names, sheltersIn]);
   const playback = usePlayback(beats, run.running, run.startedAt ?? 0);
+  // The stress case replaying on the map beside the report, and when it was chosen.
+  const [replay, setReplay] = useState<{ stress: StressCase; at: number } | null>(null);
   const [printing, setPrinting] = useState<{
     part: PrintPart;
     plan?: string;
@@ -61,11 +73,23 @@ function Screens() {
   } | null>(null);
 
   const transcript = run.transcript;
+  const rec = transcript?.recommendation ?? null;
+  const budget = transcript?.base_scenario.budget ?? 0;
+  const replayBeats = useMemo(() => {
+    const places = { name: (id: string) => names[id] ?? id, sheltersIn };
+    return rec && replay ? stressBeats(replay.stress, rec, budget, places) : [];
+  }, [rec, budget, replay, names, sheltersIn]);
+  const replayback = usePlayback(replayBeats, false, replay?.at ?? 0);
+  const restBeat = useMemo(
+    () => (rec ? finalPlanBeat(rec, budget, (id) => names[id] ?? id) : null),
+    [rec, budget, names],
+  );
   const needed = budgetShortfall(transcript);
   const asking = !run.running && transcript && needed != null && kept !== transcript;
 
   useEffect(() => {
     if (transcript) setShowReport(true);
+    setReplay(null);
   }, [transcript]);
 
   useEffect(() => {
@@ -87,14 +111,21 @@ function Screens() {
 
   function download(part: PrintPart, plan?: Alternative) {
     if (!transcript) return;
-    const canvas = document.querySelector<HTMLCanvasElement>(".maplibregl-canvas");
-    let map: string | null = null;
-    try {
-      map = canvas?.toDataURL("image/png") ?? null;
-    } catch {
-      map = null;
-    }
-    setPrinting({ part, plan: plan?.key, map, file: pdfName(transcript, plan?.title ?? part, name) });
+    const file = pdfName(transcript, plan?.title ?? part, name);
+    const capture = () => {
+      const canvas = document.querySelector<HTMLCanvasElement>(".maplibregl-canvas");
+      let map: string | null = null;
+      try {
+        map = canvas?.toDataURL("image/png") ?? null;
+      } catch {
+        map = null;
+      }
+      setPrinting({ part, plan: plan?.key, map, file });
+    };
+    if (!replay) return capture();
+    // The PDF's map shows the plan as planned: wait for the camera to settle back on it.
+    setReplay(null);
+    setTimeout(capture, REPLAY_RESET_MS);
   }
 
   function go(next: Scenario) {
@@ -119,6 +150,8 @@ function Screens() {
           ? "report"
           : "setup";
   const report = screen === "report" && transcript;
+  const mapBeat =
+    screen === "running" ? playback.beat : report ? (replay ? replayback.beat : restBeat) : null;
 
   return (
     <div className="fixed inset-0 flex flex-col bg-slate-100 lg:flex-row">
@@ -127,8 +160,11 @@ function Screens() {
           scenario={scenario}
           quiet={screen !== "setup" && !report}
           compact={!!report}
-          beat={screen === "running" ? playback.beat : null}
+          beat={mapBeat}
         />
+        {report && replay && (
+          <ReplayStage beats={replayBeats} playback={replayback} onReset={() => setReplay(null)} />
+        )}
       </div>
 
       {screen === "setup" && (
@@ -169,13 +205,18 @@ function Screens() {
             transcript={transcript}
             onDownload={download}
             hasOthers={alternatives(transcript, previous).length > 0}
-            onNewPlan={() => setShowReport(false)}
+            onNewPlan={() => {
+              setReplay(null);
+              setShowReport(false);
+            }}
           />
           <div className="px-4 pb-10 sm:px-6">
             <PlanReport
               transcript={transcript}
               previous={previous}
               onDownload={(plan) => download("plan", plan)}
+              replaying={replay?.stress ?? null}
+              onReplay={(stress) => setReplay({ stress, at: Date.now() })}
             />
           </div>
         </div>

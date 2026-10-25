@@ -1,8 +1,17 @@
 // Turns run data into beats: what the map shows, one moment of the story at a time.
 
-import type { Action, Attack, Briefing, Round, SimulationResult } from "@/lib/api";
+import type {
+  Action,
+  Attack,
+  Backup,
+  Briefing,
+  Recommendation,
+  Round,
+  SimulationResult,
+  StressCase,
+} from "@/lib/api";
 import { describeAction, describeAttack, type PlaceName } from "@/lib/describe";
-import { dollars, join, people } from "@/lib/format";
+import { dollars, join, people, sentence } from "@/lib/format";
 
 /** Names for captions, and the shelters within each town's radius: a closed road does not
  * cut a town off from those. */
@@ -27,10 +36,10 @@ export type Figures = {
 };
 
 export type Beat = {
-  /** "reroute": where people go once the attack hits. "note": a caption with nothing to draw,
-   * such as a round without a plan. */
-  kind: "plan" | "verdict" | "attack" | "reroute" | "note";
-  /** The round it belongs to, from 1. */
+  /** "reroute": where people go once the attack hits. "backup": a stress case's backup plan
+   * under its failures. "note": a caption with nothing to draw, such as a round without a plan. */
+  kind: "plan" | "verdict" | "attack" | "reroute" | "backup" | "note";
+  /** The round it belongs to, from 1; 0 outside a run (the final plan and its replays). */
   round: number;
   caption: string;
   shelters: Record<string, ShelterState>;
@@ -70,30 +79,16 @@ export function roundBeats(round: Round, places: StoryPlaces): Beat[] {
     ];
   }
 
-  const shelters: Record<string, ShelterState> = {};
-  for (const action of plan.actions) {
-    if (action.type === "open_shelter") shelters[action.shelter_id] = "open";
-  }
-  const arcs = round.report ? briefingArcs(round.report.briefing) : [];
-  const planned: Beat = {
-    kind: "plan",
-    round: number,
-    caption:
-      round.plan_from_round != null
-        ? `${label} · The Planner's answer was invalid; testing the round ${round.plan_from_round + 1} plan again`
-        : `${label} · Planner: ${describeActions(plan.actions, name)}`,
-    shelters,
-    arcs,
-    cutTowns: [],
-    unreached: {},
-    figures: {
-      atRisk: result.people_affected,
-      sheltered: result.people_sheltered,
-      budgetUsed: result.cost,
-      budget: round.scenario.budget,
-      reserve: plan.actions.reduce((sum, a) => sum + (a.type === "allocate_budget" ? a.amount : 0), 0),
-    },
-  };
+  const planned = plannedBeat(
+    number,
+    round.plan_from_round != null
+      ? `${label} · The Planner's answer was invalid; testing the round ${round.plan_from_round + 1} plan again`
+      : `${label} · Planner: ${describeActions(plan.actions, name)}`,
+    plan.actions,
+    result,
+    round.scenario.budget,
+    round.report?.briefing ?? null,
+  );
 
   const failed = verdict.checks.find((c) => !c.passed);
   const beats: Beat[] = [
@@ -110,11 +105,92 @@ export function roundBeats(round: Round, places: StoryPlaces): Beat[] {
     },
   ];
   if (round.attack && round.attacked) {
-    const attacked = attackBeat(planned, plan.actions, round.attack, round.attacked, places);
-    beats.push(attacked);
-    if (round.attacked_briefing) beats.push(rerouteBeat(attacked, round.attacked_briefing, round.attacked));
+    const { attack, attacked } = round;
+    const struck = attackBeat(
+      planned,
+      plan.actions,
+      [attack],
+      attacked,
+      places,
+      `${label} · Adversary: ${describeAttack(attack, name)}, ${sheltered(attacked)}`,
+    );
+    beats.push(struck);
+    if (round.attacked_briefing) {
+      beats.push(
+        rerouteBeat(struck, round.attacked_briefing, `${label} · People reroute: ${reached(attacked)}`),
+      );
+    }
   }
   return beats;
+}
+
+/** The final plan as planned: drawn beside the report, and where a replay resets to. */
+export function finalPlanBeat(rec: Recommendation, budget: number, name: PlaceName): Beat {
+  return plannedBeat(
+    0,
+    `The plan: ${describeActions(rec.plan.actions, name)}, ${sheltered(rec.result)}`,
+    rec.plan.actions,
+    rec.result,
+    budget,
+    rec.report?.briefing ?? null,
+  );
+}
+
+/** A stress case replayed on the final plan: its failures strike (all at once for a pair),
+ * people reroute, then its backup plan, if it has one, takes over under the same failures. */
+export function stressBeats(
+  stress: StressCase,
+  rec: Recommendation,
+  budget: number,
+  places: StoryPlaces,
+): Beat[] {
+  const { name } = places;
+  const struck = attackBeat(
+    finalPlanBeat(rec, budget, name),
+    rec.plan.actions,
+    stress.attacks,
+    stress.result,
+    places,
+    `${sentence(join(stress.attacks.map((a) => describeAttack(a, name))))}, ${sheltered(stress.result)}`,
+  );
+  const beats = [struck];
+  if (stress.briefing) {
+    beats.push(rerouteBeat(struck, stress.briefing, `People reroute: ${reached(stress.result)}`));
+  }
+  if (stress.backup?.briefing) {
+    beats.push(backupBeat(struck, stress.backup, stress.backup.briefing, stress.result, name));
+  }
+  return beats;
+}
+
+function plannedBeat(
+  round: number,
+  caption: string,
+  actions: Action[],
+  result: SimulationResult,
+  budget: number,
+  briefing: Briefing | null,
+): Beat {
+  const shelters: Record<string, ShelterState> = {};
+  for (const action of actions) {
+    if (action.type === "open_shelter") shelters[action.shelter_id] = "open";
+  }
+  return {
+    kind: "plan",
+    round,
+    caption,
+    shelters,
+    arcs: briefing ? briefingArcs(briefing) : [],
+    cutTowns: [],
+    unreached: {},
+    figures: {
+      atRisk: result.people_affected,
+      sheltered: result.people_sheltered,
+      budgetUsed: result.cost,
+      budget,
+      reserve: reserve(actions),
+    },
+  };
 }
 
 /** Town -> shelter arcs from a field briefing. People flooded outside every town have no
@@ -129,36 +205,98 @@ function briefingArcs(briefing: Briefing): Arc[] {
   );
 }
 
-/** The attack beat redrawn with people sent to the shelters still open to them. */
-function rerouteBeat(attackBeat: Beat, briefing: Briefing, attacked: SimulationResult): Beat {
+/** Town id -> people who reach no shelter, from a field briefing. */
+function briefingUnreached(briefing: Briefing): Record<string, number> {
   const unreached: Record<string, number> = {};
   for (const { community_id: town, people_unreached: lost } of briefing.neighborhoods) {
     if (town != null && lost >= MIN_PEOPLE) unreached[town] = lost;
   }
+  return unreached;
+}
+
+/** The attack beat redrawn with people sent to the shelters still open to them. */
+function rerouteBeat(attackBeat: Beat, briefing: Briefing, caption: string): Beat {
   return {
     ...attackBeat,
     kind: "reroute",
-    caption: `Round ${attackBeat.round} · People reroute: ${people(attacked.people_sheltered)} of ${people(attacked.people_affected)} still reach a shelter`,
+    caption,
     arcs: briefingArcs(briefing),
-    unreached,
+    unreached: briefingUnreached(briefing),
   };
 }
 
-/** The plan with one failure applied: what it takes out, and who can no longer get through. */
+/** The backup plan under the attack beat's failures: the shelters it opens instead, and
+ * where people go. */
+function backupBeat(
+  attackBeat: Beat,
+  backup: Backup,
+  briefing: Briefing,
+  before: SimulationResult,
+  name: PlaceName,
+): Beat {
+  const shelters: Record<string, ShelterState> = {};
+  for (const [id, state] of Object.entries(attackBeat.shelters)) {
+    if (state === "offline") shelters[id] = state;
+  }
+  for (const action of backup.actions) {
+    if (action.type === "open_shelter") shelters[action.shelter_id] = "open";
+  }
+  for (const action of unfundedActions(backup.actions, backup.result.unfunded_actions)) {
+    if (action.type === "open_shelter") shelters[action.shelter_id] = "unfunded";
+  }
+  return {
+    ...attackBeat,
+    kind: "backup",
+    caption: `Backup plan: ${describeActions(backup.actions, name)}, ${sheltered(backup.result)}`,
+    shelters,
+    arcs: briefingArcs(briefing),
+    unreached: briefingUnreached(briefing),
+    figures: attackBeat.figures && {
+      ...attackBeat.figures,
+      sheltered: backup.result.people_sheltered,
+      shelteredBefore: before.people_sheltered,
+      budgetUsed: backup.result.cost,
+      reserve: reserve(backup.actions),
+    },
+  };
+}
+
+/** "453 of 960 people sheltered". */
+function sheltered(result: SimulationResult): string {
+  return `${people(result.people_sheltered)} of ${people(result.people_affected)} people sheltered`;
+}
+
+/** "453 of 960 still reach a shelter". */
+function reached(result: SimulationResult): string {
+  return `${people(result.people_sheltered)} of ${people(result.people_affected)} still reach a shelter`;
+}
+
+function reserve(actions: Action[]): number {
+  return actions.reduce((sum, a) => sum + (a.type === "allocate_budget" ? a.amount : 0), 0);
+}
+
+/** The plan with failures applied: what they take out, and who can no longer get through. */
 function attackBeat(
   planned: Beat,
   actions: Action[],
-  attack: Attack,
+  attacks: Attack[],
   attacked: SimulationResult,
   places: StoryPlaces,
+  caption: string,
 ): Beat {
   const unfunded = unfundedActions(actions, attacked.unfunded_actions);
   const shelters = { ...planned.shelters };
-  if (attack.type === "shelter_offline") shelters[attack.shelter_id] = "offline";
+  for (const attack of attacks) {
+    if (attack.type === "shelter_offline") shelters[attack.shelter_id] = "offline";
+  }
   for (const action of unfunded) {
     if (action.type === "open_shelter") shelters[action.shelter_id] = "unfunded";
   }
-  const cutTowns = attack.type === "road_closed" ? [attack.community_id] : [];
+  const cutTowns = attacks.flatMap((a) => (a.type === "road_closed" ? [a.community_id] : []));
+  const budget = attacks.reduce(
+    (left, a) => (a.type === "budget_cut" ? left * (1 - a.percent / 100) : left),
+    planned.figures?.budget ?? 0,
+  );
   const riders = fundedRiders(actions, unfunded);
   const unreached: Record<string, number> = {};
   const arcs = planned.arcs.map((arc) => {
@@ -177,7 +315,7 @@ function attackBeat(
   return {
     ...planned,
     kind: "attack",
-    caption: `Round ${planned.round} · Adversary: ${describeAttack(attack, places.name)}, ${people(attacked.people_sheltered)} of ${people(attacked.people_affected)} people sheltered`,
+    caption,
     shelters,
     arcs,
     cutTowns,
@@ -186,10 +324,7 @@ function attackBeat(
       ...planned.figures,
       sheltered: attacked.people_sheltered,
       shelteredBefore: planned.figures.sheltered,
-      budget:
-        attack.type === "budget_cut"
-          ? planned.figures.budget * (1 - attack.percent / 100)
-          : planned.figures.budget,
+      budget,
     },
   };
 }

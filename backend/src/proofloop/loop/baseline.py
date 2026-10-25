@@ -13,6 +13,7 @@ import math
 from collections.abc import Sequence
 from itertools import combinations
 
+from proofloop.loop.briefing import brief
 from proofloop.loop.describe import describe_action
 from proofloop.loop.schemas import (
     Action,
@@ -26,7 +27,7 @@ from proofloop.loop.schemas import (
     StageTransport,
     StressCase,
 )
-from proofloop.loop.simulation import affected_people, simulate
+from proofloop.loop.simulation import affected_people, simulate, trace
 from proofloop.loop.stress import apply_all, apply_attack, unique_attacks
 from proofloop.world import World
 
@@ -70,10 +71,11 @@ def with_backup(world: World, base: Scenario, case: StressCase) -> StressCase:
     """The case with a backup plan, built for its failures, when that shelters more."""
     hit = apply_all(base, case.attacks)
     plan = baseline_plan(world, hit, case.attacks)
-    result = simulate(world, hit, plan)
-    if result.people_sheltered < case.result.people_sheltered + _MIN_GAIN:
+    traced = trace(world, hit, plan)
+    if traced.result.people_sheltered < case.result.people_sheltered + _MIN_GAIN:
         return case
-    return case.model_copy(update={"backup": Backup(actions=plan.actions, result=result)})
+    backup = Backup(actions=plan.actions, result=traced.result, briefing=brief(world, hit, traced))
+    return case.model_copy(update={"backup": backup})
 
 
 def full_cover_cost(world: World, scenario: Scenario) -> float | None:
