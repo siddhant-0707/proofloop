@@ -3,7 +3,8 @@
 Both see the same facts the Simulation uses: shelters (capacity, cost, availability
 and how many affected people each can reach on its own), communities (affected
 people and whether their road is open), the budget and the transport price. The
-Planner also sees the Verifier's findings from earlier rounds.
+Planner also sees earlier rounds: the Verifier's findings and each failure the
+Adversary tested, so it can hedge. The Adversary sees only the plan it tests.
 
 The Planner has a check step: it drafts a plan, code simulates the draft, and it
 writes its final plan and claims knowing what the draft achieved. If the final
@@ -14,35 +15,32 @@ more check with the exact numbers. The Verifier still checks the result.
 import math
 import re
 from collections.abc import Sequence
-from typing import Annotated
-
-from pydantic import Field
 
 from proofloop.gemma.client import GemmaClient, Generation
-from proofloop.gemma.sources import source_pack
 from proofloop.loop.agents import AgentReply
 from proofloop.loop.describe import describe_action, describe_attack, describe_damage
 from proofloop.loop.schemas import (
     AllocateBudget,
     Attack,
-    BudgetCut,
     OpenShelter,
     Plan,
-    RoadClosed,
     Round,
     Scenario,
-    ShelterOffline,
     SimulationResult,
     StageTransport,
-    TargetOutreach,
 )
 from proofloop.loop.simulation import action_cost, simulate
 from proofloop.loop.verifier import verify
+from proofloop.sources import source_pack
 from proofloop.world import Community, World
 
 PLANNER_SYSTEM = """You are the Planner for a county emergency manager after a hurricane.
-Shelter as many affected people as possible within the budget, with a plan that still
-works after a red team knocks out a shelter, closes a road or cuts the budget.
+First, shelter every affected person under the conditions given, if the budget allows;
+otherwise as many as possible. A red team then tests each plan with one failure (a
+shelter offline, a road closed, or a budget cut). Earlier rounds show the failures it
+found: with any money left, hedge against them, but never shelter fewer people under the
+conditions given. Plans are ranked first by people sheltered as given, then by the
+average share sheltered under every single failure.
 
 Actions (use any mix, in priority order; earlier actions are funded first):
 - open_shelter(shelter_id): people who can reach it on their own go there.
@@ -51,9 +49,6 @@ Actions (use any mix, in priority order; earlier actions are funded first):
   road is closed. Costs {seat_cost} per seat.
 - allocate_budget(contingency_reserve, amount): money held back (at least $1,000). If the
   budget is cut later, the reserve absorbs the cut before any action loses funding.
-- target_outreach(community_id): door-to-door teams and alerts warn that community's
-  people flooded outside FEMA flood zones. Costs {outreach_cost}. It matters once those
-  people are unwarned: without outreach they think they are safe and stay home.
 
 Rules:
 - Only use shelters and communities from the lists, and never a shelter marked OFFLINE.
@@ -79,20 +74,12 @@ Choose exactly one attack that leaves the plan sheltering as few people as possi
   cannot reach a shelter on their own (transport still gets through).
 - budget_cut(percent, 10 to 50): the county loses money; actions the smaller budget
   cannot fund are dropped, last first, after any contingency reserve is used up.
-- unwarned_outside_zone(): people flooded outside FEMA flood zones believe they are
-  safe (and likely have no flood insurance), so they stay home unless the plan runs
-  outreach in their community. Strong when many affected people live outside the zones.
 Prefer what the plan relies on most. Only use shelters and communities from the lists.
 rationale: one or two sentences on why this could happen and why it hurts, naming
 shelters and communities by name (not id) and citing sources as [S1], [S2].
 
 Sources:
 {sources}"""
-
-
-_ATTACKS_ONCE_UNWARNED = Annotated[
-    ShelterOffline | RoadClosed | BudgetCut, Field(discriminator="type")
-]
 
 
 class GemmaPlanner:
@@ -107,10 +94,12 @@ class GemmaPlanner:
         system = PLANNER_SYSTEM.format(
             sources=source_pack(),
             seat_cost=f"${world.transport_cost_per_seat:,.0f}",
-            outreach_cost=f"${world.outreach_cost:,.0f}",
         )
         # Transport only makes sense where people are affected.
-        allowed = {**_allowed(world, scenario), "community_id": _affected_communities(world)}
+        allowed = {
+            **_allowed(world, scenario),
+            "community_id": _affected_communities(world, scenario),
+        }
         situation = "\n\n".join([_situation(world, scenario), _history(history, world)])
 
         if self._starting_plan is not None and not history:
@@ -188,13 +177,11 @@ class GemmaAdversary:
         lines.append("Choose one attack.")
         allowed = {"shelter_id": _allowed(world, scenario)["shelter_id"]}
         if open_roads := [
-            c.id for c in world.communities if c.id not in scenario.closed_communities
+            c.id for c in _towns(world, scenario) if c.id not in scenario.closed_communities
         ]:
             allowed["community_id"] = open_roads
-        # Once people are unwarned, that attack is no longer on offer.
-        menu = _ATTACKS_ONCE_UNWARNED if scenario.unwarned_outside_zones else Attack
         generation = self._client.generate(
-            ADVERSARY_SYSTEM.format(sources=source_pack()), "\n\n".join(lines), menu, allowed
+            ADVERSARY_SYSTEM.format(sources=source_pack()), "\n\n".join(lines), Attack, allowed
         )
         return _reply(generation, world, skipped=generation.skipped)
 
@@ -235,27 +222,23 @@ def _situation(world: World, scenario: Scenario) -> str:
             f"cost ${shelter.cost:,.0f}, can shelter {alone:.0f} people on its own"
         )
     towns = []
-    for community in world.communities:
+    for community in _towns(world, scenario):
         people = _affected_in(world, community)
-        outside = _affected_in(world, community, outside_zones_only=True)
         road = "road CLOSED" if community.id in scenario.closed_communities else "road open"
-        towns.append(
-            f"- id {community.id} ({community.name}): {people:.0f} affected "
-            f"({outside:.0f} outside FEMA flood zones), {road}"
-        )
+        towns.append(f"- id {community.id} ({community.name}): {people:.0f} affected, {road}")
+    scope = world.community(scenario.scope) if scenario.scope else None
     return "\n".join(
         [
-            f"Affected people: {affected:.0f}. Budget: ${scenario.budget:,.0f}. "
-            f"Transport: ${world.transport_cost_per_seat:,.0f} per seat. "
-            f"Outreach: ${world.outreach_cost:,.0f} per community.",
             *(
                 [
-                    "People flooded outside FEMA flood zones are UNWARNED: they stay home "
-                    "unless the plan runs outreach in their community."
+                    f"The plan is for {scope.name} only: only its affected people count, "
+                    "and any shelter may take them."
                 ]
-                if scenario.unwarned_outside_zones
+                if scope
                 else []
             ),
+            f"Affected people: {affected:.0f}. Budget: ${scenario.budget:,.0f}. "
+            f"Transport: ${world.transport_cost_per_seat:,.0f} per seat.",
             "Shelters (refer to them by id):",
             *rows,
             *(["Communities (refer to them by id):", *towns] if towns else []),
@@ -275,8 +258,6 @@ def _check(
         f"cost ${result.cost:,.0f}, shelters {result.people_sheltered:.0f} of "
         f"{result.people_affected:.0f} affected people "
         f"(you claimed ${draft.claims.cost:,.0f} and {draft.claims.people_sheltered:.0f}). "
-        f"{result.people_unreached_outside_zones:.0f} unreached people live outside FEMA "
-        "flood zones. "
         f"Cost of each action: {_cost_breakdown(draft, world)}; total ${result.cost:,.0f}. "
         "Your final claims.cost must be the total for your final actions."
     )
@@ -305,8 +286,6 @@ def _cuts(plan: Plan, world: World, over: float) -> str:
                     f"stage {action.seats - seats} instead of {action.seats} seats for "
                     f"{action.community_id}"
                 )
-        elif isinstance(action, TargetOutreach) and world.outreach_cost >= over:
-            options.append(f"drop the outreach in {action.community_id}")
         elif isinstance(action, OpenShelter):
             shelter = world.shelter(action.shelter_id)
             if shelter and shelter.cost >= over:
@@ -320,13 +299,19 @@ def _cost_breakdown(plan: Plan, world: World) -> str:
     )
 
 
-def _affected_communities(world: World) -> list[str]:
-    return [c.id for c in world.communities if _affected_in(world, c) > 0]
+def _towns(world: World, scenario: Scenario) -> list[Community]:
+    """The communities the plan is for: the scenario's town, or all of them."""
+    if scenario.scope is not None and (town := world.community(scenario.scope)):
+        return [town]
+    return list(world.communities)
 
 
-def _affected_in(world: World, community: Community, outside_zones_only: bool = False) -> float:
-    flooded = world.flooded_outside_fema_zones() if outside_zones_only else world.hazard.flooded
-    cells = community.mask(world.grid.shape) & flooded
+def _affected_communities(world: World, scenario: Scenario) -> list[str]:
+    return [c.id for c in _towns(world, scenario) if _affected_in(world, c) > 0]
+
+
+def _affected_in(world: World, community: Community) -> float:
+    cells = community.mask(world.grid.shape) & world.hazard.flooded
     return float(world.population[cells].sum())
 
 
@@ -352,7 +337,9 @@ def _history(history: Sequence[Round], world: World) -> str:
             failed = "; ".join(c.reason or c.name for c in round_.verdict.checks if not c.passed)
             line += f". REJECTED by the Verifier: {failed}"
         if round_.attack:
-            line += f". Then {describe_attack(round_.attack, world)}"
+            line += f". Red team test: {describe_attack(round_.attack, world)}"
+            if round_.attacked:
+                line += f"; the plan then shelters {round_.attacked.people_sheltered:.0f}"
         lines.append(line + ".")
     return "\n".join(lines)
 

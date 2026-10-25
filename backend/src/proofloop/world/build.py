@@ -67,13 +67,11 @@ def main() -> None:
     save_world(world, WORLD_CACHE)
     rows, cols = world.grid.shape
     affected = world.population[world.hazard.flooded].sum()
-    outside = world.population[world.flooded_outside_fema_zones()].sum()
     print(
         f"wrote {WORLD_CACHE} ({world.hazard.method}, {rows}x{cols} cells, "
         f"{int(world.hazard.flooded.sum())} flagged, {world.population.sum():,.0f} people, "
         f"{affected:,.0f} in flagged cells, {len(world.shelters)} shelters, "
-        f"{len(world.communities)} communities, "
-        f"{outside:,.0f} affected outside FEMA flood zones)"
+        f"{len(world.communities)} communities)"
     )
 
 

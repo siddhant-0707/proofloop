@@ -42,7 +42,7 @@ from proofloop.world.store import load_world
 # Variables already set in the shell win over backend/.env.
 load_dotenv(BACKEND_DIR / ".env", override=False)
 
-app = FastAPI(title="ProofLoop")
+app = FastAPI(title="Cascade")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
@@ -67,9 +67,7 @@ class HazardLayerInfo(BaseModel):
 
 class FloodCells(BaseModel):
     kinds: dict[int, str]  # FloodKind value -> name; 0 when the method cannot tell kinds apart
-    cells: list[
-        list[float]
-    ]  # [lon, lat, kind, confidence, people, outside FEMA zones (0/1)] per flagged cell
+    cells: list[list[float]]  # [lon, lat, kind, confidence, people] per flagged cell
 
 
 class ShelterInfo(BaseModel):
@@ -91,8 +89,6 @@ class CommunityInfo(BaseModel):
 class ExposureInfo(BaseModel):
     total_population: float
     people_in_flooded_cells: float
-    # Affected people outside FEMA flood zones; None when the zones are not loaded.
-    people_outside_fema_zones: float | None
     fema_zones_image_url: str
     population_image_url: str
     shelters: list[ShelterInfo]
@@ -145,7 +141,7 @@ def _hazard_png_bytes() -> bytes:
 
 @app.get("/api/flood-cells")
 def flood_cells() -> FloodCells:
-    """Every flagged cell as [lon, lat, kind, confidence, people, outside FEMA zones (0/1)]."""
+    """Every flagged cell as [lon, lat, kind, confidence, people]."""
     world = big_bend_world()
     rows, cols = np.nonzero(world.hazard.flooded)
     kind = world.hazard.kind
@@ -157,7 +153,6 @@ def flood_cells() -> FloodCells:
             kinds,
             world.hazard.confidence[rows, cols].round(2),
             world.population[rows, cols].round(1),
-            world.flooded_outside_fema_zones()[rows, cols].astype(np.uint8),
         ]
     )
     return FloodCells(kinds={int(k): k.name.lower() for k in FloodKind}, cells=cells.tolist())
@@ -182,11 +177,6 @@ def exposure() -> ExposureInfo:
     return ExposureInfo(
         total_population=float(world.population.sum()),
         people_in_flooded_cells=float(world.population[world.hazard.flooded].sum()),
-        people_outside_fema_zones=(
-            float(world.population[world.flooded_outside_fema_zones()].sum())
-            if world.in_fema_zone is not None
-            else None
-        ),
         fema_zones_image_url="/api/fema-zones.png",
         population_image_url="/api/population.png",
         shelters=[
@@ -259,14 +249,17 @@ def stream_loop(
 ) -> StreamingResponse:
     """Run the Loop on the Big Bend World, streaming one JSON event per line.
 
-    The body carries the base Scenario (budget, offline shelters, closed roads) and, for a
-    re-plan, the previous plan. A re-plan is `rounds=1&final_attack=false`.
+    The body carries the base Scenario (budget, and a community id as `scope` for a
+    single-town plan) and, for a re-plan, the previous plan. A re-plan is
+    `rounds=1&final_attack=false`.
 
     Events: {"type": "started", "rounds": n}, then {"type": "round", "round": ...} as each
     round completes, then {"type": "transcript", "transcript": ...} or {"type": "error"}.
     """
     request = request or LoopRequest()
     scenario = request.scenario
+    if scenario and scenario.scope and big_bend_world().community(scenario.scope) is None:
+        raise HTTPException(status_code=400, detail=f"unknown community {scenario.scope}")
     planner, adversary = _agents(agents, request.previous_plan)  # 503 before streaming
     events: queue.Queue[dict | None] = queue.Queue()
     # Set when the client goes away (a newer run replaced this one); the Loop then stops

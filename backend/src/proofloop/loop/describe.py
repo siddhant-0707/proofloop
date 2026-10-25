@@ -10,8 +10,6 @@ from proofloop.loop.schemas import (
     Scenario,
     ShelterOffline,
     StageTransport,
-    TargetOutreach,
-    UnwarnedOutsideZone,
 )
 from proofloop.world import World
 
@@ -22,8 +20,6 @@ def describe_action(action: Action, world: World) -> str:
     if isinstance(action, StageTransport):
         town = _community_name(action.community_id, world)
         return f"stage {action.seats} transport seats for {town}"
-    if isinstance(action, TargetOutreach):
-        return f"run outreach in {_community_name(action.community_id, world)}"
     assert isinstance(action, AllocateBudget)
     return f"hold ${action.amount:,.0f} back as a contingency reserve"
 
@@ -33,10 +29,8 @@ def describe_attack(attack: Attack, world: World) -> str:
         return f"{_shelter_name(attack.shelter_id, world)} goes offline"
     if isinstance(attack, RoadClosed):
         return f"the road into {_community_name(attack.community_id, world)} closes"
-    if isinstance(attack, BudgetCut):
-        return f"the budget is cut by {attack.percent:g}%"
-    assert isinstance(attack, UnwarnedOutsideZone)
-    return "people flooded outside FEMA flood zones think they are safe and stay home"
+    assert isinstance(attack, BudgetCut)
+    return f"the budget is cut by {attack.percent:g}%"
 
 
 def describe_damage(scenario: Scenario, world: World) -> str:
@@ -45,8 +39,6 @@ def describe_damage(scenario: Scenario, world: World) -> str:
     damage += [
         f"road into {_community_name(c, world)} closed" for c in sorted(scenario.closed_communities)
     ]
-    if scenario.unwarned_outside_zones:
-        damage.append("people outside FEMA flood zones unwarned")
     return "; ".join(damage)
 
 

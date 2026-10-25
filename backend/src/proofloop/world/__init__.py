@@ -74,18 +74,11 @@ class World:
     # Assumption: high-water vehicles and buses with drivers for a three-day activation.
     transport_cost_per_seat: float = 150.0
     # (rows, cols) bool: inside FEMA's Special Flood Hazard Area; None when not loaded.
+    # Map context only: planning counts every affected person the same.
     in_fema_zone: np.ndarray | None = None
-    # Assumption: door-to-door teams, reverse 911 calls and radio for one community.
-    outreach_cost: float = 5_000.0
 
     def shelter(self, shelter_id: str) -> Shelter | None:
         return next((s for s in self.shelters if s.id == shelter_id), None)
 
     def community(self, community_id: str) -> Community | None:
         return next((c for c in self.communities if c.id == community_id), None)
-
-    def flooded_outside_fema_zones(self) -> np.ndarray:
-        """Flooded cells outside FEMA flood zones; none when the zones are not loaded."""
-        if self.in_fema_zone is None:
-            return np.zeros(self.grid.shape, dtype=bool)
-        return self.hazard.flooded & ~self.in_fema_zone

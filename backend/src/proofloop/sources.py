@@ -1,4 +1,5 @@
-"""The curated source pack the Planner may cite. No runtime web search.
+"""The curated source pack: what the Planner may cite and what every figure's evidence
+points to. No runtime web search.
 
 Each entry is a short paraphrase with its origin, so citations in a plan's
 rationale can be traced. Add entries only from sources someone has read.
@@ -19,7 +20,7 @@ SOURCES: tuple[Source, ...] = (
     Source(
         id="S1",
         title="NISAR radar observation of Hurricane Isaias",
-        origin="NASA-ISRO NISAR L2/L3 provisional products, track 148 frame 16 (ASF DAAC)",
+        origin="NASA-ISRO NISAR L2/L3 provisional products, track 148 frames 16 and 17 (ASF DAAC)",
         summary=(
             "NISAR imaged the Big Bend on Sep 28 and Oct 10, 2026, about a day after landfall. "
             "The hazard layer is radar-observed water change with a confidence per cell, "
@@ -48,8 +49,8 @@ SOURCES: tuple[Source, ...] = (
     ),
     Source(
         id="S4",
-        title="ProofLoop simulation method",
-        origin="ProofLoop docs/plan.md",
+        title="Cascade planning method",
+        origin="Cascade method notes (docs/plan.md)",
         summary=(
             "People in flooded cells are affected. They can reach an open shelter through dry "
             "cells within a fixed travel distance. Each shelter takes at most its capacity, "
@@ -69,7 +70,23 @@ SOURCES: tuple[Source, ...] = (
             "radar-flagged cells around Perry and Cross City live outside these zones."
         ),
     ),
+    Source(
+        id="S6",
+        title="2020 Census block populations for Dixie and Taylor counties",
+        origin=(
+            "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/2"
+        ),
+        summary=(
+            "Population of every 2020 Census block. Cascade spreads each block's people "
+            "evenly over the cells it covers; it counts residents, not who was home during "
+            "the storm."
+        ),
+    ),
 )
+
+
+def source(source_id: str) -> Source:
+    return next(s for s in SOURCES if s.id == source_id)
 
 
 def source_pack() -> str:
