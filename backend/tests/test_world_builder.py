@@ -11,6 +11,7 @@ from sme2_files import one_cell, write_sme2
 from proofloop.exposure.census import Block
 from proofloop.exposure.communities import CommunitySite
 from proofloop.exposure.shelters import ShelterSite
+from proofloop.nisar.gcov import read_gcov, write_gcov_crop
 from proofloop.nisar.sme2 import BBox
 from proofloop.world import Community, FloodKind, Grid, HazardLayer, World
 from proofloop.world.builder import (
@@ -34,11 +35,14 @@ def _gcov_world(
     after_mask: np.ndarray | int = 1,
     water_fraction: float = 0.0,
 ) -> World:
-    return build_world_from_gcov(
+    frame = GranulePair(
         write_gcov(tmp_path / "before.h5", hh=before_hh),
         write_gcov(tmp_path / "after.h5", hh=after_hh, mask=after_mask),
+    )
+    return build_world_from_gcov(
+        [frame],
         SCENE_BBOX,
-        permanent_water=write_sme2(tmp_path / "sme2.h5", water_fraction=water_fraction),
+        permanent_water=[write_sme2(tmp_path / "sme2.h5", water_fraction=water_fraction)],
     )
 
 
@@ -235,7 +239,7 @@ def test_world_falls_back_to_sme2_when_gcov_is_missing(tmp_path):
     )
     missing = GranulePair(tmp_path / "gcov-before.h5", tmp_path / "gcov-after.h5")
 
-    world = build_world(EVERYWHERE, sme2, missing)
+    world = build_world(EVERYWHERE, [sme2], [missing])
 
     assert world.hazard.method == "sme2"
     assert world.hazard.kind is None
@@ -249,9 +253,61 @@ def test_world_uses_gcov_when_both_granules_are_present(tmp_path):
         write_gcov(tmp_path / "gcov-before.h5"), write_gcov(tmp_path / "gcov-after.h5")
     )
 
-    world = build_world(SCENE_BBOX, sme2, gcov)
+    world = build_world(SCENE_BBOX, [sme2], [gcov])
 
     assert world.hazard.method == "gcov"
+
+
+def _frame(tmp_path: Path, name: str, after_hh: np.ndarray | float, mask: int = 1) -> GranulePair:
+    return GranulePair(
+        write_gcov(tmp_path / f"{name}-before.h5", hh=FOREST, mask=mask),
+        write_gcov(tmp_path / f"{name}-after.h5", hh=after_hh, mask=mask),
+    )
+
+
+def test_cells_a_frame_did_not_measure_come_from_the_next_frame(tmp_path):
+    unmeasured = _frame(tmp_path, "16", FOREST, mask=0)
+    flooded = _frame(tmp_path, "17", center_patch(0.4, base=FOREST))
+    water = [write_sme2(tmp_path / "sme2.h5")]
+
+    world = build_world_from_gcov([unmeasured, flooded], SCENE_BBOX, permanent_water=water)
+
+    assert world.hazard.flooded[_center(world)]
+
+
+def test_where_frames_overlap_the_first_frame_wins(tmp_path):
+    dry = _frame(tmp_path, "16", FOREST)
+    flooded = _frame(tmp_path, "17", center_patch(0.4, base=FOREST))
+    water = [write_sme2(tmp_path / "sme2.h5")]
+
+    world = build_world_from_gcov([dry, flooded], SCENE_BBOX, permanent_water=water)
+
+    assert not world.hazard.flooded.any()
+
+
+def test_cells_beyond_every_permanent_water_granule_are_never_flagged(tmp_path):
+    flooded = _frame(tmp_path, "16", center_patch(0.4, base=FOREST))
+    elsewhere = write_sme2(tmp_path / "sme2.h5", shift_deg=5.0)
+
+    world = build_world_from_gcov([flooded], SCENE_BBOX, permanent_water=[elsewhere])
+
+    assert not world.hazard.flooded.any()
+
+
+def test_a_gcov_crop_reads_back_like_the_granule_it_came_from(tmp_path):
+    hh = center_patch(0.4, base=FOREST)
+    mask = center_patch(0, base=1).astype(np.uint8)
+    granule = write_gcov(tmp_path / "granule.h5", hh=hh, mask=mask)
+
+    crop = write_gcov_crop(read_gcov(granule, SCENE_BBOX, 100.0, ("hh",)), tmp_path / "crop.h5")
+
+    original = read_gcov(granule, SCENE_BBOX, layers=("hh",))
+    cropped = read_gcov(crop, SCENE_BBOX, layers=("hh",))
+    assert cropped.epsg == original.epsg
+    np.testing.assert_array_equal(cropped.x, original.x)
+    np.testing.assert_array_equal(cropped.y, original.y)
+    np.testing.assert_array_equal(cropped.layers["hh"], original.layers["hh"])
+    assert np.isnan(cropped.layers["hh"]).any()
 
 
 def test_a_cached_gcov_world_keeps_its_flood_kinds(tmp_path):

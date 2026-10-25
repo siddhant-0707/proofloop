@@ -63,21 +63,34 @@ class GranulePair:
         return self.before.exists() and self.after.exists()
 
 
-def build_world(bbox: BBox, sme2: GranulePair, gcov: GranulePair | None = None) -> World:
-    """Use GCOV when both granules are present, otherwise fall back to SME2."""
-    if gcov is not None and gcov.exist():
-        return build_world_from_gcov(gcov.before, gcov.after, bbox, permanent_water=sme2.before)
-    return build_world_from_sme2(sme2.before, sme2.after, bbox)
+def build_world(bbox: BBox, sme2: Sequence[GranulePair], gcov: Sequence[GranulePair] = ()) -> World:
+    """Each argument holds one before/after pair per frame. Use GCOV when every granule is
+    present, otherwise fall back to the first frame's SME2."""
+    if gcov and all(pair.exist() for pair in gcov):
+        return build_world_from_gcov(gcov, bbox, permanent_water=[p.before for p in sme2])
+    return build_world_from_sme2(sme2[0].before, sme2[0].after, bbox)
 
 
 def build_world_from_gcov(
-    before: Path, after: Path, bbox: BBox, permanent_water: Path, cell_m: float = GCOV_CELL_M
+    frames: Sequence[GranulePair],
+    bbox: BBox,
+    permanent_water: Sequence[Path],
+    cell_m: float = GCOV_CELL_M,
 ) -> World:
-    """`permanent_water` is an SME2 granule whose water fraction masks the Gulf and rivers."""
+    """`frames` are GCOV before/after pairs. Where frames overlap, each cell takes both passes
+    from the first frame that measured it on both. `permanent_water` are SME2 granules whose
+    water fraction masks the Gulf and rivers; cells none of them cover are never flagged."""
     grid = _latlon_grid(bbox, cell_m)
-    pre_hh = _resample(read_gcov(before, bbox, cell_m, layers=("hh",)), "hh", grid, cell_m)
-    post_hh = _resample(read_gcov(after, bbox, cell_m, layers=("hh",)), "hh", grid, cell_m)
-    water_fraction = _sample_sme2(read_sme2(permanent_water), "water_fraction", grid)
+    pre_hh, post_hh = np.full(grid.shape, np.nan), np.full(grid.shape, np.nan)
+    for frame in frames:
+        pre = _resample(read_gcov(frame.before, bbox, cell_m, layers=("hh",)), "hh", grid, cell_m)
+        post = _resample(read_gcov(frame.after, bbox, cell_m, layers=("hh",)), "hh", grid, cell_m)
+        fill = ~(np.isfinite(pre_hh) & np.isfinite(post_hh)) & np.isfinite(pre) & np.isfinite(post)
+        pre_hh[fill], post_hh[fill] = pre[fill], post[fill]
+    water_fraction = np.full(grid.shape, np.nan)
+    for path in permanent_water:
+        sampled = _sample_sme2(read_sme2(path), "water_fraction", grid)
+        water_fraction = np.where(np.isnan(water_fraction), sampled, water_fraction)
 
     with np.errstate(divide="ignore", invalid="ignore"):
         change_db = 10 * np.log10(post_hh / pre_hh)
@@ -295,7 +308,16 @@ def _multilook(power: np.ndarray, looks: int) -> np.ndarray:
 
 
 def _sample_sme2(sme2: Sme2Grid, layer: str, grid: Grid) -> np.ndarray:
-    """The nearest SME2 cell's value at each grid cell."""
+    """The nearest SME2 cell's value at each grid cell, NaN beyond the granule's edge."""
     rows = np.abs(sme2.latitude[None, :] - grid.latitude[:, None]).argmin(axis=1)
     cols = np.abs(sme2.longitude[None, :] - grid.longitude[:, None]).argmin(axis=1)
-    return sme2.layers[layer][np.ix_(rows, cols)]
+    values = sme2.layers[layer][np.ix_(rows, cols)]
+    values[_beyond(sme2.latitude, rows, grid.latitude), :] = np.nan
+    values[:, _beyond(sme2.longitude, cols, grid.longitude)] = np.nan
+    return values
+
+
+def _beyond(axis: np.ndarray, nearest: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Whether each target lies more than half a cell from its nearest point on `axis`."""
+    half = abs(float(axis[1] - axis[0])) / 2 if axis.size > 1 else np.inf
+    return np.abs(axis[nearest] - targets) > half + 1e-9

@@ -13,8 +13,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -40,6 +42,7 @@ from proofloop.world.store import load_world
 load_dotenv(BACKEND_DIR / ".env", override=False)
 
 app = FastAPI(title="ProofLoop")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 class Bounds(BaseModel):
@@ -59,6 +62,11 @@ class HazardLayerInfo(BaseModel):
     open_water_cells: int | None
     under_canopy_cells: int | None
     image_url: str
+
+
+class FloodCells(BaseModel):
+    kinds: dict[int, str]  # FloodKind value -> name; 0 when the method cannot tell kinds apart
+    cells: list[list[float]]  # [lon, lat, kind, confidence, people] per flagged cell
 
 
 class ShelterInfo(BaseModel):
@@ -127,6 +135,25 @@ def hazard_image() -> Response:
 @lru_cache(maxsize=1)
 def _hazard_png_bytes() -> bytes:
     return hazard_png(big_bend_world())
+
+
+@app.get("/api/flood-cells")
+def flood_cells() -> FloodCells:
+    """Every flagged cell as [lon, lat, kind, confidence, people], for vector rendering."""
+    world = big_bend_world()
+    rows, cols = np.nonzero(world.hazard.flooded)
+    kind = world.hazard.kind
+    kinds = kind[rows, cols] if kind is not None else np.zeros(rows.size, dtype=np.uint8)
+    cells = np.column_stack(
+        [
+            world.grid.longitude[cols].round(5),
+            world.grid.latitude[rows].round(5),
+            kinds,
+            world.hazard.confidence[rows, cols].round(2),
+            world.population[rows, cols].round(1),
+        ]
+    )
+    return FloodCells(kinds={int(k): k.name.lower() for k in FloodKind}, cells=cells.tolist())
 
 
 @app.get("/api/exposure")

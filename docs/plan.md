@@ -7,7 +7,7 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 ## Decisions
 
 - **Hazard and place:** Hurricane Isaias flooding in the Big Bend, Florida.
-- **Study area:** NISAR track 148 ascending, frame 16 (Dixie County and coastal Taylor County). Frame 17 (Perry, Tallahassee) is optional.
+- **Study area:** NISAR track 148 ascending, frames 16 (Dixie County and coastal Taylor County) and 17 (Perry).
 - **Epochs:** before 2026-09-28, after 2026-10-10 (about one day after landfall).
 - **User:** a Taylor or Dixie County emergency manager.
 - **Loop:** Planner and Adversary agents on Gemma 4, 3 rounds plus a final attack, structured JSON output only.
@@ -64,13 +64,17 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
   One day after landfall the radar mostly sees water under the trees, not standing open water, matching the SME2 finding.
   Keaton Beach is outside the frame 16 swath (no valid samples).
   The remaining flags are scattered and speckle-like; treat the layer as radar-observed water change with confidence, not a flood map.
-- **Real exposure (#5).** The World's bounding box runs north to 30.15° N so it includes Perry, where Taylor County's shelters are. Frame 16 has no radar samples over Perry, so those cells are never flagged.
+- **Real exposure (#5).** The World's bounding box runs north to 30.15° N so it includes Perry, where Taylor County's shelters are. The numbers below are from frame 16 alone, which has no radar samples over Perry; see the frame 17 note after this section.
   - **Population:** 2020 Census blocks for Dixie (12029) and Taylor (12123) from TIGERweb, downloaded on the first `world.build`. Each block's population is spread evenly over the 60 m cells whose centers fall inside it; blocks smaller than a cell put everyone in their interior point's cell, and blocks cut by the grid edge keep only the share of their area inside. 35,537 people land on the grid (all of Dixie, 18,655 of Taylor's 21,796); 475 live in flagged cells.
   - **Shelters:** the four general-population sites in the 2020 Florida Statewide Emergency Shelter Plan, capacity summed over each site's buildings: Dixie County HS (2,558) and Ruth Raines MS (1,523) in Cross City; Taylor County ES (3,503) and Taylor County HS (3,151) in Perry. The plan has no cost to open, so cost is an assumption: $25 per space for a three-day activation.
   - **Travel reach:** 60 km along the grid (1,000 cells at 60 m), because coastal towns are 30 to 55 km from the shelters. The Cross City shelters reach nearly all 475 affected people; the Perry shelters reach 2.
   - **Default budget:** $150,000, enough to open two of the four shelters.
   - **Performance:** the Simulation's reachability search is vectorized and cached per World and shelter, so a Loop on the 1577 x 1370 grid with the rule-based agents takes under 2 s.
   - **First finding:** losing both Cross City schools leaves almost no affected person within reach of a shelter, so the Adversary's attacks on them decide the run.
+- **Frame 17 mosaic (Perry).** The GCOV layer now mosaics frames 16 and 17 (also 10 m, EPSG:32617). Where they overlap, each cell takes both passes from the first frame that measured it on both, so a change is never computed across frames. Permanent water comes from the SME2 water fraction of both frames; cells neither covers are never flagged.
+  - **No full download needed:** a granule that isn't downloaded is read in place with HTTP range requests (h5py over a seekable file object) and cropped to the Big Bend. Each frame 17 crop fetched about 290 MB in under 2 minutes, instead of 6.5 GB, and is cached in `data/raw/nisar/crops`.
+  - **Result:** 33,965 cells flagged (33,154 under canopy, 811 open water), 960 people in flagged cells. Flagged share by 0.05° latitude band stays between 3.4% and 7.7% with no step at the frame seam (about 29.9 to 30.05° N). Perry 3.7% flagged (171 people), Keaton Beach 1.3%, now covered. All four shelters sit on dry cells.
+  - **Loop:** the Perry shelters now matter. The first plan opens Ruth Raines MS and Taylor County HS and shelters 959.5 of 960 affected people; after the Adversary knocks out both Perry shelters and then Ruth Raines, the recommendation shelters about 450.
 
 ## Action and attack menus (#7)
 
@@ -78,7 +82,7 @@ Agreed on 2026-10-24.
 
 - **Communities** are the unit for transport and road closures: Keaton Beach, Steinhatchee, Horseshoe Beach, Suwannee, Cross City and Perry.
   Each is an approximate town center with a 4 km radius (a planning assumption).
-  Affected people per community on the GCOV World: Cross City 213, Steinhatchee 68, Suwannee 14, Horseshoe Beach 3, Keaton Beach 1, Perry 0.
+  Affected people per community on the frame 16 and 17 GCOV mosaic: Perry 300, Cross City 205, Steinhatchee 64, Suwannee 14, Keaton Beach 6, Horseshoe Beach 2.
 - **Actions:** open shelter; stage transport (community, seats); allocate budget (contingency reserve, at least $1,000).
   - Transport carries a community's remaining affected people, nearest to its center first, into open shelters that still have beds, even when its road is closed.
     It costs $150 per seat (an assumption).

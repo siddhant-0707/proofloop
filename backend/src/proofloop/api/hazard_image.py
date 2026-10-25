@@ -18,8 +18,8 @@ from proofloop.world import FloodKind, World
 LOW = np.array([253, 174, 97])
 HIGH = np.array([215, 25, 28])
 KIND_RAMPS = {
-    FloodKind.OPEN_WATER: (np.array([116, 169, 207]), np.array([8, 81, 156])),
-    FloodKind.UNDER_CANOPY: (np.array([188, 150, 230]), np.array([84, 39, 143])),
+    FloodKind.OPEN_WATER: (np.array([116, 169, 207]), np.array([30, 58, 138])),
+    FloodKind.UNDER_CANOPY: (np.array([186, 230, 253]), np.array([2, 132, 199])),
 }
 MIN_ALPHA, MAX_ALPHA = 110, 220
 # Population density: transparent below 1 person/km^2, most opaque from 1,000.

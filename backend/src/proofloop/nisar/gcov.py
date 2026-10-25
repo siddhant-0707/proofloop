@@ -1,12 +1,13 @@
 """Read NISAR L2 GCOV (geocoded backscatter) granules.
 
 GCOV grids are UTM (the EPSG code is in the `projection` dataset) at 10 to
-20 m (frame 16 is 10 m), with 1D x/y axes of pixel centers. Backscatter terms are terrain-corrected
-gamma0 power, NaN where missing. The `mask` layer holds the subswath number of
+20 m (frames 16 and 17 are 10 m), with 1D x/y axes of pixel centers. Backscatter terms
+are terrain-corrected gamma0 power, NaN where missing. The `mask` layer holds the subswath number of
 valid samples, 0 where any averaged radar sample was invalid, and 255 outside
 the acquisition.
 """
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,11 +37,15 @@ class GcovGrid:
 
 
 def read_gcov(
-    path: Path, bbox: BBox, pad_m: float = 0.0, layers: tuple[str, ...] = tuple(LAYERS)
+    path: Path | io.IOBase,
+    bbox: BBox,
+    pad_m: float = 0.0,
+    layers: tuple[str, ...] = tuple(LAYERS),
 ) -> GcovGrid:
     """Read the pixels covering `bbox`, plus `pad_m` meters on every side.
 
     A frame-wide crop at 10 m is tens of millions of pixels, so read only the layers you need.
+    `path` may be a seekable file object, such as a RemoteFile.
     """
     with h5py.File(path, "r") as f:
         epsg = _epsg(f)
@@ -58,6 +63,27 @@ def read_gcov(
             values[invalid | ~(values > 0)] = np.nan
             data[name] = values
     return GcovGrid(epsg=epsg, x=x[cols], y=y[rows], layers=data)
+
+
+def write_gcov_crop(grid: GcovGrid, dest: Path) -> Path:
+    """Save a crop in the GCOV layout, so read_gcov reads it like the full granule."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_name(dest.name + ".part")
+    shape = (grid.y.size, grid.x.size)
+    valid = np.ones(shape, dtype=bool)
+    with h5py.File(partial, "w") as f:
+        grids = f.create_group(_GRIDS.rstrip("/"))
+        grids["xCoordinates"] = grid.x
+        grids["yCoordinates"] = grid.y
+        projection = grids.create_dataset("projection", data=np.uint32(grid.epsg))
+        projection.attrs["epsg_code"] = grid.epsg
+        for name, values in grid.layers.items():
+            grids.create_dataset(LAYERS[name], data=values, compression="gzip", shuffle=True)
+            valid &= np.isfinite(values)
+        mask = np.where(valid, 1, _MASK_INVALID).astype(np.uint8)
+        grids.create_dataset("mask", data=mask, compression="gzip")
+    partial.rename(dest)
+    return dest
 
 
 def _epsg(f: h5py.File) -> int:

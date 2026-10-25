@@ -101,6 +101,11 @@ export type ExposureInfo = {
 
 export type CommunityInfo = { id: string; name: string; latitude: number; longitude: number };
 
+export type FloodCells = {
+  kinds: Record<string, string>; // FloodKind value -> name
+  cells: [lon: number, lat: number, kind: number, confidence: number, people: number][];
+};
+
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.text();
@@ -111,6 +116,10 @@ async function json<T>(response: Response): Promise<T> {
 
 export async function fetchHazard(): Promise<HazardLayerInfo> {
   return json(await fetch("/api/hazard"));
+}
+
+export async function fetchFloodCells(): Promise<FloodCells> {
+  return json(await fetch("/api/flood-cells"));
 }
 
 export async function fetchExposure(): Promise<ExposureInfo> {
