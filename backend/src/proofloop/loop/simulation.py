@@ -159,9 +159,8 @@ def _cells_cut_off_from_shelter(world: World, scenario: Scenario, shelter: Shelt
         community = world.community(community_id)
         if community is None:
             continue
-        mask = community.mask(world.grid.shape)
-        if not mask[shelter.row, shelter.col]:
-            cut_off |= mask
+        if not community.contains(shelter.row, shelter.col):
+            cut_off |= community.mask(world.grid.shape)
     return cut_off
 
 

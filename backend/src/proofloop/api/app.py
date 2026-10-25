@@ -20,7 +20,13 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from proofloop.api.hazard_image import fema_zone_png, hazard_bounds, hazard_png, population_png
+from proofloop.api.hazard_image import (
+    fema_zone_png,
+    flood_surface_png,
+    hazard_bounds,
+    hazard_png,
+    population_png,
+)
 from proofloop.gemma.agents import GemmaAdversary, GemmaPlanner
 from proofloop.gemma.client import GemmaClient
 from proofloop.gemma.providers import providers_from_env
@@ -63,6 +69,8 @@ class HazardLayerInfo(BaseModel):
     open_water_cells: int | None
     under_canopy_cells: int | None
     image_url: str
+    # The flagged cells' evidence smoothed into a water-like surface, for display only.
+    surface_url: str
 
 
 class FloodCells(BaseModel):
@@ -84,6 +92,9 @@ class CommunityInfo(BaseModel):
     name: str
     latitude: float
     longitude: float
+    radius_km: float
+    # Shelters within its radius: a closed road does not cut the town off from these.
+    shelter_ids: list[str]
 
 
 class ExposureInfo(BaseModel):
@@ -124,6 +135,7 @@ def hazard() -> HazardLayerInfo:
         open_water_cells=None if kind is None else int((kind == FloodKind.OPEN_WATER).sum()),
         under_canopy_cells=None if kind is None else int((kind == FloodKind.UNDER_CANOPY).sum()),
         image_url="/api/hazard.png",
+        surface_url="/api/flood-surface.png",
     )
 
 
@@ -137,6 +149,20 @@ def hazard_image() -> Response:
 @lru_cache(maxsize=1)
 def _hazard_png_bytes() -> bytes:
     return hazard_png(big_bend_world())
+
+
+@app.get("/api/flood-surface.png")
+def flood_surface_image() -> Response:
+    return Response(
+        content=_flood_surface_png_bytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@lru_cache(maxsize=1)
+def _flood_surface_png_bytes() -> bytes:
+    return flood_surface_png(big_bend_world())
 
 
 @app.get("/api/flood-cells")
@@ -174,6 +200,7 @@ def _fema_png_bytes() -> bytes:
 def exposure() -> ExposureInfo:
     world = big_bend_world()
     lat, lon = world.grid.latitude, world.grid.longitude
+    cell_km = abs(float(lat[0] - lat[1])) * 111.32
     return ExposureInfo(
         total_population=float(world.population.sum()),
         people_in_flooded_cells=float(world.population[world.hazard.flooded].sum()),
@@ -192,7 +219,12 @@ def exposure() -> ExposureInfo:
         ],
         communities=[
             CommunityInfo(
-                id=c.id, name=c.name, latitude=float(lat[c.row]), longitude=float(lon[c.col])
+                id=c.id,
+                name=c.name,
+                latitude=float(lat[c.row]),
+                longitude=float(lon[c.col]),
+                radius_km=c.radius_cells * cell_km,
+                shelter_ids=[s.id for s in world.shelters if c.contains(s.row, s.col)],
             )
             for c in world.communities
         ],

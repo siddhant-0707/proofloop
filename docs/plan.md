@@ -157,7 +157,7 @@ Agreed on 2026-10-24; replaces the shelter, road and unwarned controls from #9.
   The Adversary sees only the current conditions and the plan it attacks, never the Planner's reasoning or earlier conversations.
   The Planner sees a summary of earlier rounds on purpose, so it can learn from the Verifier.
 - **Confidence:** the per-cell radar evidence stays in the data and the evidence trail but is no longer shown on the map.
-- **Hide unpopulated squares:** a map option under the flooding layer hides flagged cells, and zoomed-out blocks, with an estimated resident count under 0.5 (which rounds to 0); it is off by default and only changes the map, not the simulation.
+- **Hide unpopulated squares:** a map option under the flooding layer hides flagged cells (and, before #27, zoomed-out blocks) with an estimated resident count under 0.5 (which rounds to 0); it is off by default and only changes the map, not the simulation.
 
 ## Plan report and review
 
@@ -194,6 +194,7 @@ Agreed on 2026-10-24; replaces the score and the FEMA-zone parts above.
 - **No FEMA-zone logic:** every affected person counts the same, inside a FEMA flood zone or not.
   The unwarned attack, target outreach, people staying home and the outside-zone figures are removed from the Simulation, the evidence trail, the briefing, the report and the agents.
 - **Map:** FEMA flood zones are always tinted on the map with a legend swatch, and have no checkbox; the pink outside-zone outlines and popup lines are gone.
+  Replaced by "The flood looks like a flood (#27)": a checkbox, off by default.
 - **Shelter everyone first:** the final plan is the plan that shelters the most people as planned; among those, the most on average under single failures; then the cheaper plan, then the earlier one.
   The baseline picks the affordable set of shelters that shelters the most people, and among those the one that best survives losing a shelter; the Gemma Planner is told to shelter everyone first and hedge only with money left.
   The baseline always competes with the verified plans (the Planner's plan wins ties), so the final plan never shelters fewer people than the budget allows.
@@ -233,3 +234,38 @@ Agreed on 2026-10-25; the product is renamed Cascade (the code and repo keep the
   The loop still records every round in the transcript; only the web app stops showing it.
 - **Download PDF:** a menu in the report header offers the full plan report (with a snapshot of the map), the field briefing (assignments and town steps), the backup plans, or the other plans (one per page).
   It prints a letterhead version of the report through the browser's print dialog, with the file name set from the page title ("Cascade - Full plan report - Whole area - $150,000"); in the print view every stress case is listed instead of the worst five.
+
+## Runs play on the map (#31)
+
+Agreed on 2026-10-25 for the demo, on the `demo-visuals` branch; replaces the Running screen in "Three screens over one map" and the Run card in "Cascade: a plain report and PDF downloads".
+The report stays plain: no Planner, Adversary, Verifier, rounds or models.
+
+- **No veil:** while a run plays, the map is the stage; a counter along the top shows people at risk, sheltered, and budget used (with any reserve held back), and a caption bar along the bottom says what is happening.
+- **Beats:** each streamed round plays as beats from a pure storyboard: the Planner's shelters light up (rings sized by capacity) and curved arcs run from each town to its shelters, labelled with people (transport arcs in their own color), then the Verifier's verdict lands as a "Verified" or "Rejected" stamp with the reason.
+  Here the run does name the Planner, the Verifier, rounds and Gemma 4: showing the agents at work is the point of the demo.
+- **Attack beat (#25):** after the verdict, the Adversary's failure plays and the camera moves in on what it hit.
+  A shelter knocked offline sends out two red shock rings, then turns grey ("OFFLINE"); a shelter a budget cut leaves unfunded turns grey ("NO FUNDS"); a closed road draws a red dashed ring at the town's radius.
+  Arcs the attack breaks turn red and stop flowing, and each town shows how many of its people are not reached: those who would have walked to a shelter that closed or lost its money, or out of a town cut off from a shelter outside it; funded transport still gets its riders through.
+  These counts come from the plan's arcs, so they leave out people flooded outside every town; the counter shows the Simulation's total ("Sheltered 453, was 960"), and the budget tile shows the budget itself, so a cut drops it.
+  A closed road never cuts a town off from a shelter inside its radius (`/api/exposure` lists them per town).
+- **Pacing:** beats play from a queue, about 5 s for a plan, 3 s for a verdict and 5 s for an attack, so the instant engine is watchable; while the next round is on its way, the caption says what the run is doing ("Round 2 · Gemma 4 is attacking the last plan and drafting a stronger one").
+- **Progress:** one segment per round plus one for the report, done, current (pulsing) or to come, instead of an estimated percent.
+- **Skip and Cancel:** Skip stops the playback and opens the report as soon as the run ends; Cancel returns to the start.
+  The report (or the budget question) opens once the last beat has had its time.
+- **Arcs, not roads:** arcs are drawn town to shelter because the Simulation moves people over grid steps through dry cells, not along roads; people flooded outside every town get no arc.
+- It still never says "stress test".
+
+## The flood looks like a flood (#27)
+
+Agreed on 2026-10-25 for the demo, on the `demo-visuals` branch.
+
+- **Dark basemap:** CARTO dark-matter replaces positron; labels get dark halos, towns are near-white and shelters a brighter green.
+- **Flood surface:** zoomed out, the map draws `/api/flood-surface.png` instead of the block squares: each kind's flagged-cell confidence blurred over 4 cells (about 240 m) and drawn where it clears 0.02, at its strongest from 0.12.
+  The flagged cells are sparse (34,000 of 2.2 million), so lone speckles fade out and clusters read as water.
+  Open water is bright blue and nearly opaque; flooding under canopy is a darker cyan and never as opaque, so it always reads fainter.
+  It is display only: the Simulation still uses the binary flagged cells, and the legend says the surface is smoothed.
+- **Permanent water:** permanent water carries no evidence, and the surface is drawn beneath the basemap's water so blur cannot spill onto the Gulf, rivers or lakes.
+- **Close up:** from zoom 13.5 the 60 m cells and their popups take over as before; the surface fades out over the last half zoom level.
+  The zoomed-out block popups are gone with the blocks.
+- **FEMA zones:** a checkbox, off by default, since the tint covers most of the area; still context only.
+- **Narrow screens:** the start screen fits the area below the start card.

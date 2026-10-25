@@ -190,6 +190,8 @@ export type HazardLayerInfo = {
   open_water_cells: number | null;
   under_canopy_cells: number | null;
   image_url: string;
+  /** The flagged cells smoothed into a water-like surface, for display only. */
+  surface_url: string;
 };
 
 export type ShelterInfo = {
@@ -210,7 +212,15 @@ export type ExposureInfo = {
   communities: CommunityInfo[];
 };
 
-export type CommunityInfo = { id: string; name: string; latitude: number; longitude: number };
+export type CommunityInfo = {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  radius_km: number;
+  /** Shelters within its radius: a closed road does not cut the town off from these. */
+  shelter_ids: string[];
+};
 
 export type FloodCells = {
   kinds: Record<string, string>; // FloodKind value -> name

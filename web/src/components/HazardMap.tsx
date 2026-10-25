@@ -13,8 +13,9 @@ import {
   type HazardLayerInfo,
   type Scenario,
 } from "@/lib/api";
+import type { Beat } from "@/lib/storyboard";
 
-const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const BASEMAP = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
 // Shown only if the hazard layer, which defines the study area, cannot be loaded.
 const FLORIDA: [[number, number], [number, number]] = [
@@ -31,39 +32,13 @@ const TOWNS: [string, number, number][] = [
   ["Suwannee", -83.143, 29.326],
 ];
 
-// Keep in sync with KIND_RAMPS in the backend's hazard_image.py (darkest stop).
+// Keep in sync with OPEN_WATER_SURFACE / CANOPY_SURFACE in hazard_image.py (deepest stop).
 const KIND_COLORS: Record<number, string> = {
-  0: "#d7191c", // flagged, kind unknown (SME2 fallback)
-  1: "#1e3a8a", // open water
-  2: "#0284c7", // under canopy
+  0: "#38bdf8", // flagged, kind unknown (SME2 fallback): drawn as open water when zoomed out
+  1: "#93c5fd", // open water
+  2: "#22d3ee", // under canopy
 };
-// Nearly every block has a flagged cell or two; below this share they are left blank.
-const MIN_DRAWN_SHARE = 0.02;
-const SHARE_STOPS: [number, string][] = [
-  [MIN_DRAWN_SHARE, "#7dd3fc"],
-  [0.1, "#0ea5e9"],
-  [0.25, "#0369a1"],
-  [0.5, "#1e3a8a"],
-];
-const SHARE_RAMP: ExpressionSpecification = [
-  "interpolate",
-  ["linear"],
-  ["get", "share"],
-  ...SHARE_STOPS.flat(),
-];
-// A block's square grows with the share of its cells flagged, filling the block (less a
-// gap) from FULL_SHARE up.
-const FULL_SHARE = 0.4;
-const MIN_SIDE = 0.25;
-const MAX_SIDE = 0.86;
-// Each level is drawn only where its blocks are roughly 6 to 13 px wide, so squares stay crisp.
-const BLOCK_LEVELS = [
-  { factor: 40, minzoom: 0, maxzoom: 9.5 },
-  { factor: 20, minzoom: 9.5, maxzoom: 10.5 },
-  { factor: 10, minzoom: 10.5, maxzoom: 11.5 },
-  { factor: 5, minzoom: 11.5, maxzoom: 12.5 },
-  { factor: 3, minzoom: 12.5, maxzoom: 13.5 },
-].map((level) => ({ ...level, id: `flood-blocks-${level.factor}` }));
+// Zoomed out, the smoothed flood surface; from here in, each flagged 60 m cell.
 const CELLS_MINZOOM = 13.5;
 // Fewer people than this rounds to 0 in the popups.
 const SOMEONE_LIVES = 0.5;
@@ -74,31 +49,40 @@ const KIND_LABELS: Record<number, string> = {
   1: "Open water (radar darkened)",
   2: "Flooding under tree canopy (radar brightened)",
 };
-const SHELTER_COLOR = "#047857";
-const TOWN_COLOR = "#0f172a";
+const SHELTER_COLOR = "#34d399";
+const TOWN_COLOR = "#f1f5f9";
+// Behind every label on the dark basemap.
+const HALO = "#0b1120";
 const TOWN_RADIUS = 3.5;
 const PEOPLE_RING = "#f59e0b";
 // Keep in sync with FEMA_ZONE_RGB / FEMA_ZONE_ALPHA in hazard_image.py.
 const FEMA_ZONE_TINT = "rgba(20, 184, 166, 0.27)";
+// The legend's version of the flood surface: faint canopy to deep open water.
+// Keep in sync with OPEN_WATER_SURFACE / CANOPY_SURFACE in hazard_image.py.
+const SURFACE_GRADIENT = "rgba(8, 145, 178, 0.45), rgba(34, 211, 238, 0.7), #38bdf8, #93c5fd";
+// The start card's height on a narrow screen, plus a gap.
+const START_CARD_HEIGHT = 420;
 
-// FEMA flood zones are always drawn, as map context only.
-type LayerGroup = "flooding" | "population" | "shelters";
+type LayerGroup = "flooding" | "fema" | "population" | "shelters";
 const GROUP_LAYERS: Record<LayerGroup, string[]> = {
-  flooding: [...BLOCK_LEVELS.map((l) => l.id), "flood-cells", "flood-people"],
+  flooding: ["flood-surface", "flood-cells", "flood-people"],
+  fema: ["fema-zones"],
   population: ["population"],
   shelters: ["shelter-dots", "shelter-labels"],
 };
 
 /** The study-area map. It fills its container; `quiet` hides the legend (while a run plays
- * over it) and `compact` folds it (beside the report). */
+ * over it), `compact` folds it (beside the report) and `beat` draws a moment of a run. */
 export default function HazardMap({
   scenario,
   quiet = false,
   compact = false,
+  beat = null,
 }: {
   scenario: Scenario;
   quiet?: boolean;
   compact?: boolean;
+  beat?: Beat | null;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -107,6 +91,8 @@ export default function HazardMap({
   const [error, setError] = useState<string | null>(null);
   const [visible, setVisible] = useState<Record<LayerGroup, boolean>>({
     flooding: true,
+    // Context only, and it tints most of the area: off until asked for.
+    fema: false,
     population: false,
     shelters: true,
   });
@@ -119,6 +105,12 @@ export default function HazardMap({
   const exposureRef = useRef<ExposureInfo | null>(null);
   const compactRef = useRef(compact);
   compactRef.current = compact;
+  const beatRef = useRef(beat);
+  beatRef.current = beat;
+  // The places the camera last framed for a beat, so repeated beats do not refit.
+  const framedRef = useRef<string | undefined>(undefined);
+  // When the current beat appeared, so a strike plays once at its start.
+  const beatShownAt = useRef(0);
 
   useEffect(() => {
     let map: maplibregl.Map | null = null;
@@ -188,6 +180,7 @@ export default function HazardMap({
           applyVisibility(created, visibleRef.current);
           applyPeopleOnly(created, peopleOnlyRef.current);
           applyScenario(created, scenarioRef.current, people);
+          if (people) applyBeat(created, beatRef.current, people, framedRef);
         });
       }
       map = created;
@@ -218,6 +211,42 @@ export default function HazardMap({
     // goTo only reads refs and `info`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compact]);
+
+  useEffect(() => {
+    beatShownAt.current = performance.now();
+    const map = mapRef.current;
+    if (map?.getSource(BEAT_ARCS) && exposureRef.current) {
+      applyBeat(map, beat, exposureRef.current, framedRef);
+    }
+  }, [beat]);
+
+  // Arcs flow and opened shelters pulse while a beat is drawn; a shelter knocked offline sends
+  // out shock rings in red, then settles grey.
+  const drawing = beat != null;
+  useEffect(() => {
+    if (!drawing) return;
+    let frame = 0;
+    let last = -1;
+    const tick = (t: number) => {
+      const map = mapRef.current;
+      const step = Math.floor(t / 60) % DASHES.length;
+      if (map?.getLayer("beat-arc-flow") && step !== last) {
+        last = step;
+        map.setPaintProperty("beat-arc-flow", "line-dasharray", DASHES[step]);
+        const pulse = 0.55 + 0.45 * Math.sin(t / 260) ** 2;
+        map.setPaintProperty("beat-rings", "circle-stroke-opacity", ["case", OPEN, pulse, 0.9]);
+        const since = t - beatShownAt.current;
+        const striking = since < STRIKES * STRIKE_MS;
+        const k = (since % STRIKE_MS) / STRIKE_MS;
+        map.setPaintProperty("beat-strike", "circle-radius", 8 + 52 * k);
+        map.setPaintProperty("beat-strike", "circle-stroke-opacity", striking ? 0.9 * (1 - k) : 0);
+        map.setPaintProperty("beat-rings", "circle-stroke-color", ringColor(striking));
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [drawing]);
 
   useEffect(() => {
     visibleRef.current = visible;
@@ -261,7 +290,7 @@ export default function HazardMap({
   const toggle = (group: LayerGroup) => setVisible((v) => ({ ...v, [group]: !v[group] }));
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-slate-100">
+    <div className="relative h-full w-full overflow-hidden bg-slate-900">
       {/* Sized directly: maplibre-gl.css forces position: relative on the map container. */}
       <div ref={container} className="h-full w-full" />
 
@@ -292,7 +321,7 @@ export default function HazardMap({
                   />
                   <span>
                     <span className="block font-medium text-slate-900">
-                      Hide squares where nobody lives
+                      Zoomed in, hide cells where nobody lives
                     </span>
                     {lived && (
                       <span className="block text-slate-500">
@@ -303,27 +332,13 @@ export default function HazardMap({
                   </span>
                 </label>
                 <p className="text-slate-500">
-                  Zoomed out, share of each block flagged (under {MIN_DRAWN_SHARE * 100}% left
-                  blank):
+                  Zoomed out, where flagged cells cluster, smoothed for display (lone cells fade
+                  out):
                 </p>
-                <div className="flex items-end gap-3">
-                  {[MIN_DRAWN_SHARE, 0.1, FULL_SHARE].map((share) => (
-                    <div key={share} className="flex items-center gap-1.5">
-                      <span className="flex h-3.5 w-3.5 items-center justify-center">
-                        <span
-                          style={{
-                            width: `${blockSide(share) * 100}%`,
-                            height: `${blockSide(share) * 100}%`,
-                            background: shareColor(share),
-                          }}
-                        />
-                      </span>
-                      <span className="text-slate-500">
-                        {Math.round(share * 100)}%{share === FULL_SHARE ? "+" : ""}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <div
+                  className="h-2 rounded-full"
+                  style={{ background: `linear-gradient(to right, ${SURFACE_GRADIENT})` }}
+                />
                 <p className="pt-1 text-slate-500">Zoomed in, each 60 m cell:</p>
                 {info?.open_water_cells != null && info.under_canopy_cells != null ? (
                   <>
@@ -344,9 +359,14 @@ export default function HazardMap({
 
               {exposure && (
                 <>
-                  <div className="pl-0.5">
-                    <Swatch color={FEMA_ZONE_TINT}>FEMA flood zones (Special Flood Hazard Area)</Swatch>
-                  </div>
+                  <LayerToggle
+                    checked={visible.fema}
+                    onChange={() => toggle("fema")}
+                    title="FEMA flood zones"
+                    detail="Special Flood Hazard Area · context only; plans count everyone the same"
+                  >
+                    <Swatch color={FEMA_ZONE_TINT}>In a FEMA flood zone</Swatch>
+                  </LayerToggle>
                   <LayerToggle
                     checked={visible.population}
                     onChange={() => toggle("population")}
@@ -357,7 +377,7 @@ export default function HazardMap({
                     checked={visible.shelters}
                     onChange={() => toggle("shelters")}
                     title="Public shelters"
-                    detail={`${exposure.shelters.length} sites · click any square or shelter for details`}
+                    detail={`${exposure.shelters.length} sites · zoom in and click a cell or shelter for details`}
                   />
                 </>
               )}
@@ -370,10 +390,321 @@ export default function HazardMap({
   );
 }
 
-/** Full screen on a wide display, the start card covers the left: keep the area clear of it. */
+/** Full screen, keep the area clear of the start card. */
 function fitPadding(element: HTMLElement, compact: boolean) {
-  const left = !compact && element.clientWidth >= 1024 ? 420 : 24;
-  return { top: 24, bottom: 24, right: 24, left };
+  if (compact) return { top: 24, bottom: 24, right: 24, left: 24 };
+  // Wide, the card sits on the left; narrower, it spans the top.
+  return element.clientWidth >= 1024
+    ? { top: 24, bottom: 24, right: 24, left: 420 }
+    : { top: START_CARD_HEIGHT, bottom: 48, right: 24, left: 24 };
+}
+
+
+
+const BEAT_ARCS = "beat-arcs";
+const BEAT_SHELTERS = "beat-shelters";
+const BEAT_UNREACHED = "beat-unreached";
+const BEAT_CUT_RINGS = "beat-cut-rings";
+const ARC_COLOR = "#f59e0b";
+const TRANSPORT_ARC_COLOR = "#c084fc";
+const RING_COLOR = "#10b981";
+const ATTACK_COLOR = "#dc2626";
+const LOST_COLOR = "#64748b";
+const OPEN: ExpressionSpecification = ["==", ["get", "state"], "open"];
+// A struck shelter sends out this many shock rings, one every STRIKE_MS.
+const STRIKES = 2;
+const STRIKE_MS = 1400;
+
+/** Rings: open green, offline red while it is struck then grey, unfunded grey. */
+function ringColor(striking: boolean): ExpressionSpecification {
+  return [
+    "match",
+    ["get", "state"],
+    "open",
+    RING_COLOR,
+    "offline",
+    striking ? ATTACK_COLOR : LOST_COLOR,
+    LOST_COLOR,
+  ];
+}
+
+// Clear of the counter above and the caption bar below.
+const BEAT_PADDING = { top: 190, bottom: 170, left: 80, right: 80 };
+const NARROW_BEAT_PADDING = { top: 160, bottom: 160, left: 40, right: 40 };
+// Dash and gap lengths, stepped each frame so the dashes run from town to shelter.
+const DASHES: number[][] = [
+  [0, 4, 3],
+  [0.5, 4, 2.5],
+  [1, 4, 2],
+  [1.5, 4, 1.5],
+  [2, 4, 1],
+  [2.5, 4, 0.5],
+  [3, 4, 0],
+  [0, 0.5, 3, 3.5],
+  [0, 1, 3, 3],
+  [0, 1.5, 3, 2.5],
+  [0, 2, 3, 2],
+  [0, 2.5, 3, 1.5],
+  [0, 3, 3, 1],
+  [0, 3.5, 3, 0.5],
+];
+
+/** Layers a run's beats draw into: rings on opened shelters, and arcs from towns to them. */
+function addBeatLayers(map: maplibregl.Map) {
+  const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+  map.addSource(BEAT_ARCS, { type: "geojson", data: empty });
+  map.addSource(BEAT_SHELTERS, { type: "geojson", data: empty });
+  map.addSource(BEAT_UNREACHED, { type: "geojson", data: empty });
+  map.addSource(BEAT_CUT_RINGS, { type: "geojson", data: empty });
+  map.addLayer({
+    id: "beat-cut-rings",
+    type: "line",
+    source: BEAT_CUT_RINGS,
+    paint: { "line-color": ATTACK_COLOR, "line-width": 3, "line-dasharray": [2, 1.5] },
+  });
+  const width: ExpressionSpecification = [
+    "interpolate",
+    ["linear"],
+    ["get", "people"],
+    1,
+    2,
+    50,
+    3.5,
+    300,
+    7,
+  ];
+  const color: ExpressionSpecification = ["case", [">", ["get", "carried"], 0], TRANSPORT_ARC_COLOR, ARC_COLOR];
+  const broken: ExpressionSpecification = ["get", "broken"];
+  map.addLayer({
+    id: "beat-arc-glow",
+    type: "line",
+    source: BEAT_ARCS,
+    layout: { "line-cap": "round" },
+    paint: {
+      "line-color": ["case", broken, ATTACK_COLOR, color],
+      "line-width": ["*", width, 3],
+      "line-opacity": 0.18,
+      "line-blur": 4,
+    },
+  });
+  map.addLayer({
+    id: "beat-arc-flow",
+    type: "line",
+    source: BEAT_ARCS,
+    filter: ["!", broken],
+    paint: { "line-color": color, "line-width": width, "line-dasharray": DASHES[0] },
+  });
+  // People an attack stops: the arc stays, red and still.
+  map.addLayer({
+    id: "beat-arc-broken",
+    type: "line",
+    source: BEAT_ARCS,
+    filter: broken,
+    paint: { "line-color": ATTACK_COLOR, "line-width": width, "line-dasharray": [1, 1.5], "line-opacity": 0.85 },
+  });
+  map.addLayer({
+    id: "beat-rings",
+    type: "circle",
+    source: BEAT_SHELTERS,
+    paint: {
+      // Area grows with capacity: 1,500 spaces is about 20 px across at zoom 9.
+      "circle-radius": [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        7,
+        ["*", ["sqrt", ["get", "capacity"]], 0.3],
+        9,
+        ["*", ["sqrt", ["get", "capacity"]], 0.52],
+        13,
+        ["*", ["sqrt", ["get", "capacity"]], 0.9],
+      ],
+      "circle-color": ["case", OPEN, RING_COLOR, LOST_COLOR],
+      "circle-opacity": ["case", OPEN, 0.16, 0.3],
+      "circle-stroke-color": ringColor(true),
+      "circle-stroke-width": 2.5,
+    },
+  });
+  map.addLayer({
+    id: "beat-strike",
+    type: "circle",
+    source: BEAT_SHELTERS,
+    filter: ["==", ["get", "state"], "offline"],
+    paint: {
+      "circle-radius": 8,
+      "circle-color": "transparent",
+      "circle-stroke-color": ATTACK_COLOR,
+      "circle-stroke-width": 3,
+    },
+  });
+  map.addLayer({
+    id: "beat-shelter-states",
+    type: "symbol",
+    source: BEAT_SHELTERS,
+    filter: ["!", OPEN],
+    layout: {
+      "text-field": ["match", ["get", "state"], "offline", "OFFLINE", "NO FUNDS"],
+      "text-font": ["Montserrat Medium"],
+      "text-size": 12,
+      "text-letter-spacing": 0.08,
+      "text-offset": [0, -2.2],
+      "text-allow-overlap": true,
+    },
+    paint: {
+      "text-color": ["match", ["get", "state"], "offline", ATTACK_COLOR, LOST_COLOR],
+      "text-halo-color": HALO,
+      "text-halo-width": 2,
+    },
+  });
+  map.addLayer({
+    id: "beat-unreached",
+    type: "symbol",
+    source: BEAT_UNREACHED,
+    layout: {
+      "text-field": ["get", "label"],
+      "text-font": ["Montserrat Medium"],
+      "text-size": 12,
+      "text-anchor": "top",
+      "text-offset": [0, 1.6],
+      "text-allow-overlap": true,
+    },
+    paint: { "text-color": ATTACK_COLOR, "text-halo-color": HALO, "text-halo-width": 2 },
+  });
+  map.addLayer({
+    id: "beat-arc-labels",
+    type: "symbol",
+    source: BEAT_ARCS,
+    filter: ["all", [">=", ["get", "people"], 5], ["!", broken]],
+    layout: {
+      "symbol-placement": "line-center",
+      "text-field": ["get", "label"],
+      "text-font": ["Montserrat Medium"],
+      "text-size": 11,
+      "text-rotation-alignment": "viewport",
+      "text-allow-overlap": true,
+    },
+    paint: { "text-color": "#fcd34d", "text-halo-color": HALO, "text-halo-width": 2 },
+  });
+}
+
+/** Draw a beat (or clear the map of one) and frame the places it involves. */
+function applyBeat(
+  map: maplibregl.Map,
+  beat: Beat | null,
+  exposure: ExposureInfo,
+  framed: { current: string | undefined },
+) {
+  const shelters = new Map(exposure.shelters.map((s) => [s.id, s]));
+  const towns = new Map(exposure.communities.map((c) => [c.id, c]));
+  const arcs = (beat?.arcs ?? []).flatMap((arc) => {
+    const town = towns.get(arc.from);
+    const shelter = shelters.get(arc.to);
+    if (!town || !shelter) return [];
+    const riders = arc.carried > 0 ? `, ${Math.round(arc.carried).toLocaleString()} by bus` : "";
+    return [
+      {
+        type: "Feature" as const,
+        geometry: curve(lonLat(town), lonLat(shelter)),
+        properties: {
+          people: arc.people,
+          carried: arc.carried,
+          broken: arc.broken,
+          label: `${Math.round(arc.people).toLocaleString()} people${riders}`,
+        },
+      },
+    ];
+  });
+  const opened = Object.entries(beat?.shelters ?? {}).flatMap(([id, state]) => {
+    const s = shelters.get(id);
+    return s ? [{ place: s, state }] : [];
+  });
+  const cut = (beat?.cutTowns ?? []).flatMap((id) => towns.get(id) ?? []);
+  const unreached = Object.entries(beat?.unreached ?? {}).flatMap(([id, people]) => {
+    const town = towns.get(id);
+    const label = `${Math.round(people).toLocaleString()} not reached`;
+    return town ? [{ lon: town.longitude, lat: town.latitude, props: { label } }] : [];
+  });
+  (map.getSource(BEAT_ARCS) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: arcs });
+  (map.getSource(BEAT_SHELTERS) as maplibregl.GeoJSONSource).setData(
+    points(
+      opened.map(({ place, state }) => ({
+        lon: place.longitude,
+        lat: place.latitude,
+        props: { id: place.id, state, capacity: place.capacity },
+      })),
+    ),
+  );
+  (map.getSource(BEAT_UNREACHED) as maplibregl.GeoJSONSource).setData(points(unreached));
+  const rings = cut.map((town) => ring(lonLat(town), town.radius_km));
+  (map.getSource(BEAT_CUT_RINGS) as maplibregl.GeoJSONSource).setData({
+    type: "FeatureCollection",
+    features: rings.map((geometry) => ({ type: "Feature", properties: {}, geometry })),
+  });
+
+  // A cut town is framed by its whole ring.
+  const ringPoints = rings.flatMap((r) => r.coordinates as [number, number][]);
+  const all = [
+    ...opened.map(({ place }) => lonLat(place)),
+    ...ringPoints,
+    ...(beat?.arcs ?? []).flatMap((a) => {
+      const town = towns.get(a.from);
+      return town ? [lonLat(town)] : [];
+    }),
+  ];
+  // An attack beat moves in on what it hit: the shelters lost, the towns cut off and both ends
+  // of every arc it broke.
+  const hit = [
+    ...opened.filter(({ state }) => state !== "open").map(({ place }) => lonLat(place)),
+    ...ringPoints,
+    ...(beat?.arcs ?? [])
+      .filter((a) => a.broken)
+      .flatMap((a) => [towns.get(a.from), shelters.get(a.to)].flatMap((p) => (p ? [lonLat(p)] : []))),
+  ];
+  const focus = beat?.kind === "attack" && hit.length ? hit : all;
+  if (!beat) framed.current = undefined;
+  if (focus.length === 0) return;
+  const key = focus.map((p) => p.join()).sort().join(";");
+  if (key === framed.current) return;
+  framed.current = key;
+  const bounds = focus.reduce(
+    (b, p) => b.extend(p),
+    new maplibregl.LngLatBounds(focus[0], focus[0]),
+  );
+  const padding = map.getContainer().clientWidth < 640 ? NARROW_BEAT_PADDING : BEAT_PADDING;
+  map.fitBounds(bounds, { padding, maxZoom: 11, duration: 1600 });
+}
+
+function lonLat(place: { longitude: number; latitude: number }): [number, number] {
+  return [place.longitude, place.latitude];
+}
+
+/** A circle of `km` around `center`, as a closed line. */
+function ring(center: [number, number], km: number): GeoJSON.LineString {
+  const [lon, lat] = center;
+  const dLat = km / 111.32;
+  const dLon = dLat / Math.cos((lat * Math.PI) / 180);
+  const coordinates: [number, number][] = [];
+  for (let i = 0; i <= 64; i++) {
+    const a = (i / 64) * 2 * Math.PI;
+    coordinates.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]);
+  }
+  return { type: "LineString", coordinates };
+}
+
+/** A gentle arc from `a` to `b`, bowed to the left of travel. */
+function curve(a: [number, number], b: [number, number]): GeoJSON.LineString {
+  const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+  const control: [number, number] = [(a[0] + b[0]) / 2 - dy * 0.2, (a[1] + b[1]) / 2 + dx * 0.2];
+  const coordinates: [number, number][] = [];
+  for (let i = 0; i <= 32; i++) {
+    const t = i / 32;
+    const u = 1 - t;
+    coordinates.push([
+      u * u * a[0] + 2 * u * t * control[0] + t * t * b[0],
+      u * u * a[1] + 2 * u * t * control[1] + t * t * b[1],
+    ]);
+  }
+  return { type: "LineString", coordinates };
 }
 
 const OFFLINE_COLOR = "#94a3b8";
@@ -419,16 +750,8 @@ function applyVisibility(map: maplibregl.Map, visible: Record<LayerGroup, boolea
   }
 }
 
-/** Show only flood squares with an estimated resident, or every flagged square. */
+/** Show only flagged cells with an estimated resident, or every flagged cell. */
 function applyPeopleOnly(map: maplibregl.Map, peopleOnly: boolean) {
-  for (const level of BLOCK_LEVELS) {
-    if (!map.getLayer(level.id)) continue;
-    map.setFilter(level.id, [
-      "all",
-      [">=", ["get", "share"], MIN_DRAWN_SHARE],
-      [">=", ["get", "people"], peopleOnly ? SOMEONE_LIVES : 0],
-    ]);
-  }
   if (map.getLayer("flood-cells")) {
     map.setFilter("flood-cells", peopleOnly ? [">=", ["get", "p"], SOMEONE_LIVES] : null);
   }
@@ -483,7 +806,7 @@ function addLayers(
   const { west, south, east, north } = hazard.bounds;
   const layers = map.getStyle().layers;
   const firstLabel = layers.find((l) => l.type === "symbol")?.id;
-  // Flood squares go over roads and buildings, which would otherwise slice through them,
+  // Flagged cells go over roads and buildings, which would otherwise slice through them,
   // but under the place and road names.
   const lastShape = layers.findLastIndex((l) => l.type !== "symbol");
   const namesAbove = layers.slice(lastShape + 1).find((l) => l.type === "symbol")?.id;
@@ -533,25 +856,35 @@ function addLayers(
   if (cells) {
     const grid = gridOf(hazard);
     const cellM = Math.round((grid.dlat * 111_320) / 10) * 10;
-    // A cell is only a few pixels wide below CELLS_MINZOOM, so further out each block of
-    // cells is drawn as one square showing the share of its cells that are flagged.
-    for (const level of BLOCK_LEVELS) {
-      const metres = cellM * level.factor;
-      map.addSource(level.id, { type: "geojson", data: floodBlocks(cells, grid, level.factor) });
-      map.addLayer(
-        {
-          id: level.id,
-          type: "fill",
-          source: level.id,
-          minzoom: level.minzoom,
-          maxzoom: level.maxzoom,
-          filter: [">=", ["get", "share"], MIN_DRAWN_SHARE],
-          paint: { "fill-color": SHARE_RAMP, "fill-opacity": 0.95 },
+    // A cell is only a few pixels wide below CELLS_MINZOOM, so further out the flagged cells
+    // are drawn as the backend's smoothed surface.
+    map.addSource("flood-surface", {
+      type: "image",
+      url: hazard.surface_url,
+      coordinates: [
+        [west, north],
+        [east, north],
+        [east, south],
+        [west, south],
+      ],
+    });
+    map.addLayer(
+      {
+        id: "flood-surface",
+        type: "raster",
+        source: "flood-surface",
+        maxzoom: CELLS_MINZOOM + 0.5,
+        paint: {
+          "raster-resampling": "linear",
+          "raster-fade-duration": 0,
+          // Fades out as the cells take over.
+          "raster-opacity": ["interpolate", ["linear"], ["zoom"], CELLS_MINZOOM - 0.5, 1, CELLS_MINZOOM + 0.5, 0],
         },
-        namesAbove,
-      );
-      popups.push([level.id, (p) => blockPopup(p, metres)]);
-    }
+      },
+      // Under the basemap's water, which hides any blur that spills off land onto the Gulf,
+      // rivers and lakes (permanent water carries no evidence of its own).
+      layers.find((l) => l.id.startsWith("water"))?.id ?? namesAbove,
+    );
 
     map.addSource("flood-cells", { type: "geojson", data: floodCellSquares(cells, grid) });
     map.addLayer(
@@ -584,6 +917,8 @@ function addLayers(
     popups.push(["flood-cells", (p) => cellPopup(p, cellM)]);
   }
 
+  addBeatLayers(map);
+
   map.addSource("towns", {
     type: "geojson",
     data: points(TOWNS.map(([name, lon, lat]) => ({ lon, lat, props: { name } }))),
@@ -595,7 +930,7 @@ function addLayers(
     paint: {
       "circle-radius": TOWN_RADIUS,
       "circle-color": TOWN_COLOR,
-      "circle-stroke-color": "#ffffff",
+      "circle-stroke-color": HALO,
       "circle-stroke-width": 1.5,
     },
   });
@@ -612,7 +947,7 @@ function addLayers(
     },
     paint: {
       "text-color": TOWN_COLOR,
-      "text-halo-color": "#ffffff",
+      "text-halo-color": HALO,
       "text-halo-width": 1.5,
     },
   });
@@ -633,12 +968,25 @@ function addLayers(
     },
     paint: {
       "text-color": CLOSED_ROAD_COLOR,
-      "text-halo-color": "#ffffff",
+      "text-halo-color": HALO,
       "text-halo-width": 1.5,
     },
   });
 
   if (exposure) addShelters(map, exposure, popups);
+  // Over the shelter's own dot: a shelter a beat's attack took out is drawn grey.
+  map.addLayer({
+    id: "beat-lost-dots",
+    type: "circle",
+    source: BEAT_SHELTERS,
+    filter: ["!", OPEN],
+    paint: {
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 5, 14, 9],
+      "circle-color": LOST_COLOR,
+      "circle-stroke-color": HALO,
+      "circle-stroke-width": 2,
+    },
+  });
   // Shelters first: the topmost layer under the pointer wins.
   showPopups(map, popups.reverse());
 }
@@ -671,7 +1019,7 @@ function addShelters(
     paint: {
       "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 5, 14, 9],
       "circle-color": SHELTER_COLOR,
-      "circle-stroke-color": "#ffffff",
+      "circle-stroke-color": HALO,
       "circle-stroke-width": 2,
     },
   });
@@ -689,7 +1037,7 @@ function addShelters(
     },
     paint: {
       "text-color": SHELTER_COLOR,
-      "text-halo-color": "#ffffff",
+      "text-halo-color": HALO,
       "text-halo-width": 1.5,
     },
   });
@@ -719,15 +1067,12 @@ function cellIndex(grid: GridShape, lon: number, lat: number): [row: number, col
   return [Math.floor((grid.north - lat) / grid.dlat), Math.floor((lon - grid.west) / grid.dlon)];
 }
 
-/** `size` cells square from (row, col), clipped to the grid, then shrunk about its centre by `scale`. */
-function square(grid: GridShape, row: number, col: number, size: number, scale = 1): GeoJSON.Polygon {
-  const west = grid.west + col * grid.dlon;
-  const east = grid.west + Math.min(col + size, grid.cols) * grid.dlon;
-  const north = grid.north - row * grid.dlat;
-  const south = grid.north - Math.min(row + size, grid.rows) * grid.dlat;
-  const inset = (1 - scale) / 2;
-  const [w, e] = [west + (east - west) * inset, east - (east - west) * inset];
-  const [n, s] = [north - (north - south) * inset, south + (north - south) * inset];
+/** `size` cells square from (row, col), clipped to the grid. */
+function square(grid: GridShape, row: number, col: number, size: number): GeoJSON.Polygon {
+  const w = grid.west + col * grid.dlon;
+  const e = grid.west + Math.min(col + size, grid.cols) * grid.dlon;
+  const n = grid.north - row * grid.dlat;
+  const s = grid.north - Math.min(row + size, grid.rows) * grid.dlat;
   return {
     type: "Polygon",
     coordinates: [
@@ -750,60 +1095,6 @@ function floodCellSquares(cells: FloodCells, grid: GridShape): GeoJSON.FeatureCo
       return { type: "Feature", properties: { k, p }, geometry: square(grid, row, col, 1) };
     }),
   };
-}
-
-function floodBlocks(cells: FloodCells, grid: GridShape, factor: number): GeoJSON.FeatureCollection {
-  const blocks = new Map<
-    string,
-    { row: number; col: number; open: number; canopy: number; other: number; people: number }
-  >();
-  for (const [lon, lat, k, , p] of cells.cells) {
-    const [cellRow, cellCol] = cellIndex(grid, lon, lat);
-    const row = Math.floor(cellRow / factor) * factor;
-    const col = Math.floor(cellCol / factor) * factor;
-    const key = `${row}/${col}`;
-    const block = blocks.get(key) ?? { row, col, open: 0, canopy: 0, other: 0, people: 0 };
-    if (k === 1) block.open += 1;
-    else if (k === 2) block.canopy += 1;
-    else block.other += 1;
-    block.people += p;
-    blocks.set(key, block);
-  }
-  return {
-    type: "FeatureCollection",
-    features: [...blocks.values()].map((b) => {
-      const size = (Math.min(b.row + factor, grid.rows) - b.row) * (Math.min(b.col + factor, grid.cols) - b.col);
-      const flagged = b.open + b.canopy + b.other;
-      const share = flagged / size;
-      return {
-        type: "Feature",
-        properties: { share, flagged, open: b.open, canopy: b.canopy, people: b.people },
-        geometry: square(grid, b.row, b.col, factor, blockSide(share)),
-      };
-    }),
-  };
-}
-
-/** The legend's version of SHARE_RAMP: the colour of the nearest stop at or below `share`. */
-function shareColor(share: number): string {
-  return SHARE_STOPS.filter(([at]) => at <= share).at(-1)?.[1] ?? SHARE_STOPS[0][1];
-}
-
-/** Side of a block's square as a fraction of the block; area tracks the flagged share. */
-function blockSide(share: number): number {
-  return Math.min(MAX_SIDE, Math.max(MIN_SIDE, MAX_SIDE * Math.sqrt(share / FULL_SHARE)));
-}
-
-function blockPopup(p: Record<string, unknown>, metres: number): string {
-  const kinds = [
-    Number(p.canopy) > 0 && `${Number(p.canopy).toLocaleString()} under tree canopy`,
-    Number(p.open) > 0 && `${Number(p.open).toLocaleString()} open water`,
-  ].filter(Boolean);
-  const people = Math.round(Number(p.people));
-  return `<strong>${Math.max(1, Math.round(Number(p.share) * 100))}% of this ${metres.toLocaleString()} m square flagged as flooded</strong><br/>
-    ${Number(p.flagged).toLocaleString()} cells${kinds.length ? `: ${kinds.join(", ")}` : ""}<br/>
-    ${people > 0 ? `${people.toLocaleString()} ${people === 1 ? "person lives" : "people live"} in them` : "Nobody lives in them"}<br/>
-    <span style="color:#64748b">Zoom in to see each cell</span>`;
 }
 
 function cellPopup(p: Record<string, unknown>, metres: number): string {

@@ -1,18 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { Transcript } from "@/lib/api";
 import { dollars, people } from "@/lib/format";
-import type { LoopRun } from "@/lib/useLoopRun";
+import type { Beat, Figures } from "@/lib/storyboard";
+import { plannedRounds, type LoopRun } from "@/lib/useLoopRun";
+import type { Playback } from "@/lib/usePlayback";
 
-const STAGES = [
-  { title: "Draft", detail: "Drafting a shelter plan for the flooded area" },
-  { title: "Strengthen", detail: "Checking it against closed shelters, roads and budget cuts" },
-  { title: "Finish", detail: "Preparing backup plans and your report" },
-];
-
-/** A full-screen veil over the map while a run plays: progress, then any question. */
+/** A full-screen veil over the map for a question or an error once a run ends. */
 export function RunVeil({ children }: { children: React.ReactNode }) {
   return (
     <div className="absolute inset-0 z-10 flex items-center justify-center bg-gradient-to-b from-slate-950/70 via-slate-950/55 to-slate-950/75 p-4 backdrop-blur-[2px]">
@@ -29,103 +25,219 @@ function Card({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function RunProgress({ run, onCancel }: { run: LoopRun; onCancel: () => void }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 200);
-    return () => clearInterval(timer);
-  }, []);
-  const fraction = progress(run, now);
-  const stage = run.done === 0 ? 0 : run.done < run.steps - 1 ? 1 : 2;
-  const elapsed = run.startedAt ? Math.max(0, Math.floor((now - run.startedAt) / 1000)) : 0;
+/** The run playing on the map: a counter along the top and a caption bar along the bottom. */
+export function RunStage({
+  run,
+  playback,
+  onCancel,
+}: {
+  run: LoopRun;
+  playback: Playback;
+  onCancel: () => void;
+}) {
+  const { beat, waiting } = playback;
   return (
-    <Card>
-      <p className="text-center text-xs font-medium uppercase tracking-[0.2em] text-sky-300">
-        {run.kind === "re-plan" ? "Updating your plan" : "Building your plan"}
-      </p>
-      <div className="mt-5 flex justify-center">
-        <Ring fraction={fraction}>
-          <span className="text-4xl font-semibold tabular-nums">{Math.floor(fraction * 100)}%</span>
-          <span className="mt-1 text-xs tabular-nums text-slate-400">{clock(elapsed)} elapsed</span>
-        </Ring>
+    <>
+      {/* Leaves the map's zoom buttons uncovered on a phone. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-start p-4 pr-14 sm:justify-center sm:p-5">
+        <RunFigures figures={beat?.figures ?? null} />
       </div>
-      <ol className="mt-6 grid grid-cols-3 gap-2">
-        {STAGES.map((s, i) => (
-          <li key={s.title} className="flex flex-col items-center gap-1.5 text-xs">
-            <span
-              className={`flex size-6 items-center justify-center rounded-full text-[11px] font-semibold transition ${
-                i < stage
-                  ? "bg-emerald-400 text-slate-900"
-                  : i === stage
-                    ? "bg-sky-400 text-slate-900 ring-4 ring-sky-400/25"
-                    : "bg-white/10 text-slate-400"
-              }`}
-            >
-              {i < stage ? "✓" : i + 1}
-            </span>
-            <span className={i === stage ? "font-medium text-white" : "text-slate-400"}>{s.title}</span>
-          </li>
-        ))}
-      </ol>
-      <p className="mt-4 flex items-center justify-center gap-2 text-center text-sm text-slate-300">
-        <span className="size-1.5 animate-pulse rounded-full bg-sky-400" aria-hidden />
-        {STAGES[stage].detail}…
-      </p>
-      <button
-        type="button"
-        onClick={onCancel}
-        className="mx-auto mt-5 block text-xs text-slate-400 transition hover:text-white"
-      >
-        Cancel
-      </button>
-    </Card>
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center p-4 sm:p-6">
+        <div className="pointer-events-auto w-full max-w-2xl overflow-hidden rounded-2xl bg-slate-950/85 text-white shadow-2xl ring-1 ring-white/10 backdrop-blur-md">
+          <Steps run={run} playback={playback} />
+          <div className="px-4 pt-2.5 pb-3 sm:px-5">
+            <div className="flex items-center gap-3">
+              <p className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.18em] text-sky-300">
+                {run.kind === "re-plan" ? "Updating your plan" : `Building your plan · ${plannedRounds(run)} rounds`}
+              </p>
+              {beat && !waiting && <BeatStamp key={beat.caption} beat={beat} />}
+              <button
+                type="button"
+                onClick={playback.skip}
+                className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium text-white ring-1 ring-white/20 transition hover:bg-white/10"
+              >
+                Skip
+              </button>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="shrink-0 text-xs text-slate-400 transition hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+            {waiting ? (
+              <p key="waiting" className="mt-1.5 flex animate-rise items-center gap-2 text-sm text-slate-200">
+                <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-400" aria-hidden />
+                {waitingCaption(run)}…
+              </p>
+            ) : (
+              beat && (
+                <p key={beat.caption} className="mt-1.5 animate-rise text-sm text-white sm:text-[15px]">
+                  {beat.caption}
+                </p>
+              )
+            )}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
-/** Share of the run done: finished steps, plus an estimate of the current one that slows as it
- * goes, so the number keeps moving but never reaches 100% before the run does. */
-function progress(run: LoopRun, now: number): number {
-  if (!run.running) return 1;
-  const final = run.done >= run.steps - 1;
-  const typical = final ? 4_000 : run.agents === "gemma" ? 40_000 : 600;
-  const since = run.lastStepAt ? now - run.lastStepAt : 0;
-  const current = 1 - Math.exp(-since / typical);
-  return Math.min(0.99, (run.done + 0.95 * current) / run.steps);
-}
-
-function clock(seconds: number): string {
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-function Ring({ fraction, children }: { fraction: number; children: React.ReactNode }) {
-  const r = 70;
-  const around = 2 * Math.PI * r;
+/** One segment per round, then one for the report: done, playing (pulsing) or to come. */
+function Steps({ run, playback }: { run: LoopRun; playback: Playback }) {
+  const rounds = plannedRounds(run);
+  const { beat, waiting, finished } = playback;
+  // The current round counts as told once its verdict is showing.
+  const roundsTold = beat ? beat.round - (beat.kind === "plan" ? 1 : 0) : 0;
+  const current = waiting ? run.rounds.length : beat ? beat.round - 1 : 0;
   return (
-    <div className="relative size-44">
-      <svg viewBox="0 0 160 160" className="size-full -rotate-90">
-        <defs>
-          <linearGradient id="run-ring" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#38bdf8" />
-            <stop offset="100%" stopColor="#34d399" />
-          </linearGradient>
-        </defs>
-        <circle cx="80" cy="80" r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="10" />
-        <circle
-          cx="80"
-          cy="80"
-          r={r}
-          fill="none"
-          stroke="url(#run-ring)"
-          strokeWidth="10"
-          strokeLinecap="round"
-          strokeDasharray={around}
-          strokeDashoffset={around * (1 - fraction)}
-          className="transition-[stroke-dashoffset] duration-300 ease-out"
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">{children}</div>
+    <div className="flex gap-1 px-4 pt-3 sm:px-5" aria-hidden>
+      {Array.from({ length: rounds + 1 }, (_, i) => {
+        const done = finished || i < roundsTold;
+        return (
+          <span
+            key={i}
+            className={`h-1 flex-1 rounded-full transition-colors duration-500 ${
+              done
+                ? "bg-gradient-to-r from-sky-400 to-emerald-400"
+                : i === current
+                  ? "animate-pulse bg-sky-400/60"
+                  : "bg-white/10"
+            }`}
+          />
+        );
+      })}
     </div>
   );
+}
+
+/** Lands on the caption bar: the Verifier's verdict, or the Adversary's attack. */
+function BeatStamp({ beat }: { beat: Beat }) {
+  if (beat.kind === "attack") {
+    return (
+      <Stamp className="bg-red-500/15 text-red-300 ring-1 ring-red-400/60">
+        <span className="size-1.5 animate-pulse rounded-full bg-red-400" aria-hidden />
+        Attack
+      </Stamp>
+    );
+  }
+  if (!beat.verdict) return null;
+  return beat.verdict.passed ? (
+    <Stamp className="border-2 border-emerald-400 text-emerald-300">Verified</Stamp>
+  ) : (
+    <Stamp className="border-2 border-red-400 text-red-300">Rejected</Stamp>
+  );
+}
+
+function Stamp({ className, children }: { className: string; children: React.ReactNode }) {
+  return (
+    <span
+      className={`flex shrink-0 animate-stamp items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-bold uppercase tracking-widest ${className}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** What the run is doing while the next beat is on its way. */
+function waitingCaption(run: LoopRun): string {
+  if (run.rounds.length >= plannedRounds(run)) {
+    return "Testing the plan against every failure and writing your report";
+  }
+  const who = run.agents === "gemma" ? "Gemma 4" : "The rule-based planner";
+  const round = `Round ${run.rounds.length + 1}`;
+  return run.rounds.length === 0
+    ? `${round} · ${who} is drafting a plan`
+    : `${round} · ${who} is attacking the last plan and drafting a stronger one`;
+}
+
+function RunFigures({ figures }: { figures: Figures | null }) {
+  return (
+    <dl className="pointer-events-auto grid grid-cols-3 divide-x divide-white/10 overflow-hidden rounded-2xl bg-slate-950/85 text-white shadow-2xl ring-1 ring-white/10 backdrop-blur-md">
+      <Figure label="People at risk" value={figures?.atRisk} format={people} />
+      <Figure
+        label="Sheltered"
+        value={figures?.sheltered}
+        format={people}
+        tone={dropped(figures) ? "bad" : "good"}
+        note={figures?.shelteredBefore != null ? `was ${people(figures.shelteredBefore)}` : undefined}
+      />
+      {/* The budget itself is the headline, so a cut visibly drops it. */}
+      <Figure
+        label="Budget"
+        value={figures?.budget}
+        format={dollars}
+        tone={figures && figures.budgetUsed > figures.budget ? "bad" : undefined}
+        note={
+          figures
+            ? `${dollars(figures.budgetUsed)} used${figures.reserve ? ` · ${dollars(figures.reserve)} held back` : ""}`
+            : undefined
+        }
+      />
+    </dl>
+  );
+}
+
+/** An attack left fewer sheltered than the plan did, counting whole people. */
+function dropped(figures: Figures | null): boolean {
+  return (
+    figures?.shelteredBefore != null &&
+    Math.round(figures.sheltered) < Math.round(figures.shelteredBefore)
+  );
+}
+
+const TONES = { good: "text-emerald-300", bad: "text-red-400" };
+
+function Figure(props: {
+  label: string;
+  value: number | undefined;
+  format: (n: number) => string;
+  tone?: "good" | "bad";
+  note?: string;
+}) {
+  const shown = useTween(props.value);
+  return (
+    <div className="px-3 py-2 sm:px-5 sm:py-2.5">
+      <dt className="text-[10px] uppercase tracking-wide text-slate-400 sm:text-[11px]">{props.label}</dt>
+      <dd
+        className={`text-lg font-semibold tabular-nums transition-colors duration-500 sm:text-2xl ${
+          props.tone ? TONES[props.tone] : ""
+        }`}
+      >
+        {shown == null ? "–" : props.format(shown)}
+      </dd>
+      {props.note && <dd className="text-[10px] text-slate-400 sm:text-[11px]">{props.note}</dd>}
+    </div>
+  );
+}
+
+/** Eases a number to each new value, so the counter rolls rather than jumps. */
+function useTween(target: number | undefined): number | undefined {
+  const [shown, setShown] = useState(target);
+  const from = useRef(target);
+  useEffect(() => {
+    if (target == null) {
+      // The next run's counter rolls up from zero.
+      from.current = undefined;
+      setShown(undefined);
+      return;
+    }
+    const start = from.current ?? 0;
+    const began = performance.now();
+    let frame = 0;
+    const step = (t: number) => {
+      const k = Math.min(1, (t - began) / 700);
+      const value = start + (target - start) * (1 - (1 - k) ** 3);
+      from.current = value;
+      setShown(value);
+      if (k < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [target]);
+  return shown;
 }
 
 /** The cheapest budget that would shelter everyone, when money alone keeps the plan short. */
