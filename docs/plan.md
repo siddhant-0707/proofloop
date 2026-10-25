@@ -114,3 +114,7 @@ Agreed on 2026-10-24.
   People outside every community's 4 km radius cannot be reached by outreach.
 - **Every Simulation result** reports the affected people outside FEMA zones whom the plan does not reach.
 - **Map:** a FEMA flood zone toggle tints the Special Flood Hazard Area and outlines flagged blocks and cells where people live outside the zones.
+- **Second Planner check (agreed 2026-10-24):** if the Planner's final plan would still fail verification (over budget or wrong claims), it gets one more check with the exact numbers and the Verifier's reasons.
+  In live runs this turns some rejected rounds into verified ones; Gemma still sometimes overspends by a few thousand dollars, and the Verifier rejects those.
+- **No repeated attacks:** an attack already in effect (a shelter already offline, a road already closed, people already unwarned) is invalid Adversary output.
+  Gemma's Adversary is only offered roads still open, and the unwarned attack is removed from its schema once in effect.

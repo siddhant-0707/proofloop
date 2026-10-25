@@ -1,6 +1,6 @@
 """Loop seam, flooded outside the FEMA flood zone (#8): the unwarned attack and outreach."""
 
-from loop_worlds import offline, open_shelter, outreach, plan, unwarned, world_from_map
+from loop_worlds import offline, open_shelter, outreach, plan, road_closed, unwarned, world_from_map
 
 from proofloop.loop import ScriptedAdversary, ScriptedPlanner, run_proofloop
 from proofloop.loop.schemas import Scenario
@@ -90,3 +90,29 @@ def test_outreach_to_an_unknown_community_fails_verification():
 
     checks = {c.name: c.reason for c in transcript.rounds[0].verdict.checks if not c.passed}
     assert checks == {"places_available": "unknown community Z"}
+
+
+def test_an_attack_that_changes_nothing_is_rejected():
+    world = world_from_map(TOWN, pop=10, shelters={"A": (100, 100)}, communities=TOWN_S)
+    already = Scenario(
+        budget=10_000,
+        offline_shelters=frozenset({"A"}),
+        closed_communities=frozenset({"S"}),
+        unwarned_outside_zones=True,
+    )
+
+    for repeat, reason in (
+        (offline("A"), "shelter A is already offline"),
+        (road_closed("S"), "the road into S is already closed"),
+        (unwarned(), "people outside FEMA zones are already unwarned"),
+    ):
+        transcript = run_proofloop(
+            world,
+            already,
+            ScriptedPlanner([plan(open_shelter("A"), cost=100, sheltered=0)]),
+            ScriptedAdversary([repeat]),
+            rounds=2,
+        )
+        first = transcript.rounds[0]
+        assert first.attack is None
+        assert reason in first.adversary_error

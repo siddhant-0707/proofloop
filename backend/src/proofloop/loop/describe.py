@@ -7,6 +7,7 @@ from proofloop.loop.schemas import (
     BudgetCut,
     OpenShelter,
     RoadClosed,
+    Scenario,
     ShelterOffline,
     StageTransport,
     TargetOutreach,
@@ -36,6 +37,17 @@ def describe_attack(attack: Attack, world: World) -> str:
         return f"the budget is cut by {attack.percent:g}%"
     assert isinstance(attack, UnwarnedOutsideZone)
     return "people flooded outside FEMA flood zones think they are safe and stay home"
+
+
+def describe_damage(scenario: Scenario, world: World) -> str:
+    """Attacks already in effect, or an empty string."""
+    damage = [f"{_shelter_name(s, world)} offline" for s in sorted(scenario.offline_shelters)]
+    damage += [
+        f"road into {_community_name(c, world)} closed" for c in sorted(scenario.closed_communities)
+    ]
+    if scenario.unwarned_outside_zones:
+        damage.append("people outside FEMA flood zones unwarned")
+    return "; ".join(damage)
 
 
 def _shelter_name(shelter_id: str, world: World) -> str:

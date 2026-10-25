@@ -5,20 +5,34 @@ and how many affected people each can reach on its own), communities (affected
 people and whether their road is open), the budget and the transport price. The
 Planner also sees the Verifier's findings from earlier rounds.
 
-The Planner has one check step: it drafts a plan, code simulates the draft, and
-it writes its final plan and claims knowing what the draft achieved. The
-Verifier still checks the final claims independently.
+The Planner has a check step: it drafts a plan, code simulates the draft, and it
+writes its final plan and claims knowing what the draft achieved. If the final
+plan would still fail verification (over budget or wrong claims), it gets one
+more check with the exact numbers. The Verifier still checks the result.
 """
 
 import re
 from collections.abc import Sequence
+from typing import Annotated
+
+from pydantic import Field
 
 from proofloop.gemma.client import GemmaClient, Generation
 from proofloop.gemma.sources import source_pack
 from proofloop.loop.agents import AgentReply
-from proofloop.loop.describe import describe_action, describe_attack
-from proofloop.loop.schemas import Attack, Plan, Round, Scenario, SimulationResult
+from proofloop.loop.describe import describe_action, describe_attack, describe_damage
+from proofloop.loop.schemas import (
+    Attack,
+    BudgetCut,
+    Plan,
+    RoadClosed,
+    Round,
+    Scenario,
+    ShelterOffline,
+    SimulationResult,
+)
 from proofloop.loop.simulation import action_cost, simulate
+from proofloop.loop.verifier import verify
 from proofloop.world import Community, World
 
 PLANNER_SYSTEM = """You are the Planner for a county emergency manager after a hurricane.
@@ -71,6 +85,11 @@ Sources:
 {sources}"""
 
 
+_ATTACKS_ONCE_UNWARNED = Annotated[
+    ShelterOffline | RoadClosed | BudgetCut, Field(discriminator="type")
+]
+
+
 class GemmaPlanner:
     def __init__(self, client: GemmaClient):
         self._client = client
@@ -95,7 +114,27 @@ class GemmaPlanner:
             Plan,
             allowed,
         )
-        return _reply(final, world, skipped=draft.skipped + final.skipped)
+        skipped = draft.skipped + final.skipped
+
+        failures = [c.reason for c in verify(world, scenario, final.value).checks if not c.passed]
+        if failures:
+            rechecked = simulate(world, scenario, final.value)
+            final = self._client.generate(
+                system,
+                "\n\n".join(
+                    [
+                        situation,
+                        _check(final.value, rechecked, scenario, world),
+                        "Your plan would be rejected: " + "; ".join(failures) + ".",
+                        "Fix it: stay within the budget and claim exactly the simulated numbers "
+                        "for the actions you keep. Give your final plan.",
+                    ]
+                ),
+                Plan,
+                allowed,
+            )
+            skipped += final.skipped
+        return _reply(final, world, skipped=skipped)
 
 
 class GemmaAdversary:
@@ -112,12 +151,19 @@ class GemmaAdversary:
                 f"{result.people_sheltered:.0f} of {result.people_affected:.0f} affected people "
                 f"and costs ${result.cost:,.0f}."
             )
+        in_effect = describe_damage(scenario, world)
+        if in_effect:
+            lines.append(f"Already in effect (do not repeat): {in_effect}.")
         lines.append("Choose one attack.")
+        allowed = {"shelter_id": _allowed(world, scenario)["shelter_id"]}
+        if open_roads := [
+            c.id for c in world.communities if c.id not in scenario.closed_communities
+        ]:
+            allowed["community_id"] = open_roads
+        # Once people are unwarned, that attack is no longer on offer.
+        menu = _ATTACKS_ONCE_UNWARNED if scenario.unwarned_outside_zones else Attack
         generation = self._client.generate(
-            ADVERSARY_SYSTEM.format(sources=source_pack()),
-            "\n\n".join(lines),
-            Attack,
-            allowed=_allowed(world, scenario),
+            ADVERSARY_SYSTEM.format(sources=source_pack()), "\n\n".join(lines), menu, allowed
         )
         return _reply(generation, world, skipped=generation.skipped)
 
