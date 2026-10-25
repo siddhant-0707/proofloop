@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { EvidenceProvider } from "@/components/EvidenceDrawer";
@@ -17,14 +17,16 @@ import PlanSetup from "@/components/PlanSetup";
 import {
   BudgetQuestion,
   RunError,
-  RunProgress,
+  RunStage,
   RunVeil,
   budgetShortfall,
 } from "@/components/RunOverlay";
 import { DEFAULT_SCENARIO, type AgentKind, type Scenario, type Transcript } from "@/lib/api";
 import { dollars } from "@/lib/format";
-import { PlacesProvider, usePlaceName } from "@/lib/places";
+import { PlacesProvider, usePlaceName, usePlaces } from "@/lib/places";
+import { roundBeats } from "@/lib/storyboard";
 import { useLoopRun } from "@/lib/useLoopRun";
+import { usePlayback } from "@/lib/usePlayback";
 
 /** Three screens over one map: choose what to plan, watch the run, read the plan report. */
 export default function Dashboard() {
@@ -45,6 +47,12 @@ function Screens() {
   // The run whose budget question was answered "keep the budget".
   const [kept, setKept] = useState<Transcript | null>(null);
   const { run, start, reset } = useLoopRun();
+  const { names } = usePlaces();
+  const beats = useMemo(
+    () => run.rounds.flatMap((r) => roundBeats(r, (id) => names[id] ?? id)),
+    [run.rounds, names],
+  );
+  const playback = usePlayback(beats, run.running, run.startedAt ?? 0);
   const [printing, setPrinting] = useState<{
     part: PrintPart;
     plan?: string;
@@ -100,10 +108,11 @@ function Screens() {
     start("re-plan", agents, next);
   }
 
-  const screen = run.running
-    ? "running"
-    : run.error
-      ? "error"
+  // The run plays on the map until its last beat has had its time, even once the report is in.
+  const screen = run.error
+    ? "error"
+    : run.running || !playback.finished
+      ? "running"
       : asking
         ? "asking"
         : showReport && transcript
@@ -114,7 +123,12 @@ function Screens() {
   return (
     <div className="fixed inset-0 flex flex-col bg-slate-100 lg:flex-row">
       <div className={report ? "relative h-[40vh] shrink-0 lg:h-auto lg:w-[40%]" : "relative flex-1"}>
-        <HazardMap scenario={scenario} quiet={screen !== "setup" && !report} compact={!!report} />
+        <HazardMap
+          scenario={scenario}
+          quiet={screen !== "setup" && !report}
+          compact={!!report}
+          beat={screen === "running" ? playback.beat : null}
+        />
       </div>
 
       {screen === "setup" && (
@@ -132,11 +146,7 @@ function Screens() {
         </div>
       )}
 
-      {screen === "running" && (
-        <RunVeil>
-          <RunProgress run={run} onCancel={reset} />
-        </RunVeil>
-      )}
+      {screen === "running" && <RunStage run={run} playback={playback} onCancel={reset} />}
       {screen === "error" && (
         <RunVeil>
           <RunError error={run.error ?? ""} onBack={reset} />

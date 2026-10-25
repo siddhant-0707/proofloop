@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { streamLoop, type AgentKind, type Scenario, type Transcript } from "@/lib/api";
+import { streamLoop, type AgentKind, type Round, type Scenario, type Transcript } from "@/lib/api";
 
 // Rounds in a full stress test; a re-plan is one round.
 const STRESS_TEST_ROUNDS = 3;
@@ -17,8 +17,8 @@ export type LoopRun = {
   done: number;
   steps: number;
   startedAt: number | null;
-  /** When the last step finished, for estimating progress through the current one. */
-  lastStepAt: number | null;
+  /** Rounds streamed so far, in order. */
+  rounds: Round[];
   transcript: Transcript | null;
   /** The transcript before this run, for a re-plan's "plan before the change". */
   previous: Transcript | null;
@@ -32,11 +32,16 @@ const IDLE: LoopRun = {
   done: 0,
   steps: STRESS_TEST_ROUNDS + 1,
   startedAt: null,
-  lastStepAt: null,
+  rounds: [],
   transcript: null,
   previous: null,
   error: null,
 };
+
+/** Rounds the run will stream: every step but the last, which writes the report. */
+export function plannedRounds(run: LoopRun): number {
+  return run.steps - 1;
+}
 
 /** Streams Loop runs from the server; a new run replaces any run still streaming. */
 export function useLoopRun() {
@@ -61,7 +66,6 @@ export function useLoopRun() {
       running: true,
       steps: rounds + 1,
       startedAt: now,
-      lastStepAt: now,
       previous: prior,
     });
     const update = (change: Partial<LoopRun>) => {
@@ -78,7 +82,11 @@ export function useLoopRun() {
           if (controller.signal.aborted) return;
           if (event.type === "started") update({ steps: event.rounds + 1 });
           else if (event.type === "round") {
-            setState((s) => ({ ...s, done: s.done + 1, lastStepAt: Date.now() }));
+            setState((s) => ({
+              ...s,
+              done: s.done + 1,
+              rounds: [...s.rounds, event.round],
+            }));
           } else if (event.type === "transcript") {
             update({ transcript: event.transcript, done: latest.current.steps });
           } else update({ error: event.detail });

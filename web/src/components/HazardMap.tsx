@@ -13,6 +13,7 @@ import {
   type HazardLayerInfo,
   type Scenario,
 } from "@/lib/api";
+import type { Beat } from "@/lib/storyboard";
 
 const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
@@ -90,15 +91,17 @@ const GROUP_LAYERS: Record<LayerGroup, string[]> = {
 };
 
 /** The study-area map. It fills its container; `quiet` hides the legend (while a run plays
- * over it) and `compact` folds it (beside the report). */
+ * over it), `compact` folds it (beside the report) and `beat` draws a moment of a run. */
 export default function HazardMap({
   scenario,
   quiet = false,
   compact = false,
+  beat = null,
 }: {
   scenario: Scenario;
   quiet?: boolean;
   compact?: boolean;
+  beat?: Beat | null;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -119,6 +122,10 @@ export default function HazardMap({
   const exposureRef = useRef<ExposureInfo | null>(null);
   const compactRef = useRef(compact);
   compactRef.current = compact;
+  const beatRef = useRef(beat);
+  beatRef.current = beat;
+  // The places the camera last framed for a beat, so repeated beats do not refit.
+  const framedRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     let map: maplibregl.Map | null = null;
@@ -188,6 +195,7 @@ export default function HazardMap({
           applyVisibility(created, visibleRef.current);
           applyPeopleOnly(created, peopleOnlyRef.current);
           applyScenario(created, scenarioRef.current, people);
+          if (people) applyBeat(created, beatRef.current, people, framedRef);
         });
       }
       map = created;
@@ -218,6 +226,33 @@ export default function HazardMap({
     // goTo only reads refs and `info`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compact]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (map?.getSource(BEAT_ARCS) && exposureRef.current) {
+      applyBeat(map, beat, exposureRef.current, framedRef);
+    }
+  }, [beat]);
+
+  // Arcs flow and opened shelters pulse while a beat is drawn.
+  const drawing = beat != null;
+  useEffect(() => {
+    if (!drawing) return;
+    let frame = 0;
+    let last = -1;
+    const tick = (t: number) => {
+      const map = mapRef.current;
+      const step = Math.floor(t / 60) % DASHES.length;
+      if (map?.getLayer("beat-arc-flow") && step !== last) {
+        last = step;
+        map.setPaintProperty("beat-arc-flow", "line-dasharray", DASHES[step]);
+        map.setPaintProperty("beat-rings", "circle-stroke-opacity", 0.55 + 0.45 * Math.sin(t / 260) ** 2);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [drawing]);
 
   useEffect(() => {
     visibleRef.current = visible;
@@ -374,6 +409,170 @@ export default function HazardMap({
 function fitPadding(element: HTMLElement, compact: boolean) {
   const left = !compact && element.clientWidth >= 1024 ? 420 : 24;
   return { top: 24, bottom: 24, right: 24, left };
+}
+
+const BEAT_ARCS = "beat-arcs";
+const BEAT_SHELTERS = "beat-shelters";
+const ARC_COLOR = "#f59e0b";
+const TRANSPORT_ARC_COLOR = "#c084fc";
+const RING_COLOR = "#10b981";
+// Clear of the counter above and the caption bar below.
+const BEAT_PADDING = { top: 150, bottom: 160, left: 80, right: 80 };
+const NARROW_BEAT_PADDING = { top: 130, bottom: 150, left: 40, right: 40 };
+// Dash and gap lengths, stepped each frame so the dashes run from town to shelter.
+const DASHES: number[][] = [
+  [0, 4, 3],
+  [0.5, 4, 2.5],
+  [1, 4, 2],
+  [1.5, 4, 1.5],
+  [2, 4, 1],
+  [2.5, 4, 0.5],
+  [3, 4, 0],
+  [0, 0.5, 3, 3.5],
+  [0, 1, 3, 3],
+  [0, 1.5, 3, 2.5],
+  [0, 2, 3, 2],
+  [0, 2.5, 3, 1.5],
+  [0, 3, 3, 1],
+  [0, 3.5, 3, 0.5],
+];
+
+/** Layers a run's beats draw into: rings on opened shelters, and arcs from towns to them. */
+function addBeatLayers(map: maplibregl.Map) {
+  const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+  map.addSource(BEAT_ARCS, { type: "geojson", data: empty });
+  map.addSource(BEAT_SHELTERS, { type: "geojson", data: empty });
+  const width: ExpressionSpecification = [
+    "interpolate",
+    ["linear"],
+    ["get", "people"],
+    1,
+    2,
+    50,
+    3.5,
+    300,
+    7,
+  ];
+  const color: ExpressionSpecification = ["case", [">", ["get", "carried"], 0], TRANSPORT_ARC_COLOR, ARC_COLOR];
+  map.addLayer({
+    id: "beat-arc-glow",
+    type: "line",
+    source: BEAT_ARCS,
+    layout: { "line-cap": "round" },
+    paint: { "line-color": color, "line-width": ["*", width, 3], "line-opacity": 0.18, "line-blur": 4 },
+  });
+  map.addLayer({
+    id: "beat-arc-flow",
+    type: "line",
+    source: BEAT_ARCS,
+    paint: { "line-color": color, "line-width": width, "line-dasharray": DASHES[0] },
+  });
+  map.addLayer({
+    id: "beat-rings",
+    type: "circle",
+    source: BEAT_SHELTERS,
+    paint: {
+      // Area grows with capacity: 1,500 spaces is about 20 px across at zoom 9.
+      "circle-radius": [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        7,
+        ["*", ["sqrt", ["get", "capacity"]], 0.3],
+        9,
+        ["*", ["sqrt", ["get", "capacity"]], 0.52],
+        13,
+        ["*", ["sqrt", ["get", "capacity"]], 0.9],
+      ],
+      "circle-color": RING_COLOR,
+      "circle-opacity": 0.16,
+      "circle-stroke-color": RING_COLOR,
+      "circle-stroke-width": 2.5,
+    },
+  });
+  map.addLayer({
+    id: "beat-arc-labels",
+    type: "symbol",
+    source: BEAT_ARCS,
+    filter: [">=", ["get", "people"], 5],
+    layout: {
+      "symbol-placement": "line-center",
+      "text-field": ["get", "label"],
+      "text-font": ["Montserrat Medium"],
+      "text-size": 11,
+      "text-rotation-alignment": "viewport",
+      "text-allow-overlap": true,
+    },
+    paint: { "text-color": "#78350f", "text-halo-color": "#fffbeb", "text-halo-width": 2 },
+  });
+}
+
+/** Draw a beat (or clear the map of one) and frame the places it involves. */
+function applyBeat(
+  map: maplibregl.Map,
+  beat: Beat | null,
+  exposure: ExposureInfo,
+  framed: { current: string | undefined },
+) {
+  const shelters = new Map(exposure.shelters.map((s) => [s.id, s]));
+  const towns = new Map(exposure.communities.map((c) => [c.id, c]));
+  const arcs = (beat?.arcs ?? []).flatMap((arc) => {
+    const town = towns.get(arc.from);
+    const shelter = shelters.get(arc.to);
+    if (!town || !shelter) return [];
+    return [
+      {
+        type: "Feature" as const,
+        geometry: curve([town.longitude, town.latitude], [shelter.longitude, shelter.latitude]),
+        properties: {
+          people: arc.people,
+          carried: arc.carried,
+          label: `${Math.round(arc.people).toLocaleString()} people${arc.carried > 0 ? `, ${Math.round(arc.carried).toLocaleString()} by bus` : ""}`,
+        },
+      },
+    ];
+  });
+  const opened = Object.keys(beat?.shelters ?? {}).flatMap((id) => {
+    const s = shelters.get(id);
+    return s ? [{ lon: s.longitude, lat: s.latitude, props: { id, capacity: s.capacity } }] : [];
+  });
+  (map.getSource(BEAT_ARCS) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: arcs });
+  (map.getSource(BEAT_SHELTERS) as maplibregl.GeoJSONSource).setData(points(opened));
+
+  const focus = [
+    ...opened.map((p) => [p.lon, p.lat] as [number, number]),
+    ...(beat?.arcs ?? []).flatMap((a) => {
+      const town = towns.get(a.from);
+      return town ? [[town.longitude, town.latitude] as [number, number]] : [];
+    }),
+  ];
+  if (!beat) framed.current = undefined;
+  if (focus.length === 0) return;
+  const key = focus.map((p) => p.join()).sort().join(";");
+  if (key === framed.current) return;
+  framed.current = key;
+  const bounds = focus.reduce(
+    (b, p) => b.extend(p),
+    new maplibregl.LngLatBounds(focus[0], focus[0]),
+  );
+  const padding = map.getContainer().clientWidth < 640 ? NARROW_BEAT_PADDING : BEAT_PADDING;
+  map.fitBounds(bounds, { padding, maxZoom: 11, duration: 1600 });
+}
+
+/** A gentle arc from `a` to `b`, bowed to the left of travel. */
+function curve(a: [number, number], b: [number, number]): GeoJSON.LineString {
+  const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+  const control: [number, number] = [(a[0] + b[0]) / 2 - dy * 0.2, (a[1] + b[1]) / 2 + dx * 0.2];
+  const coordinates: [number, number][] = [];
+  for (let i = 0; i <= 32; i++) {
+    const t = i / 32;
+    const u = 1 - t;
+    coordinates.push([
+      u * u * a[0] + 2 * u * t * control[0] + t * t * b[0],
+      u * u * a[1] + 2 * u * t * control[1] + t * t * b[1],
+    ]);
+  }
+  return { type: "LineString", coordinates };
 }
 
 const OFFLINE_COLOR = "#94a3b8";
@@ -583,6 +782,8 @@ function addLayers(
     );
     popups.push(["flood-cells", (p) => cellPopup(p, cellM)]);
   }
+
+  addBeatLayers(map);
 
   map.addSource("towns", {
     type: "geojson",

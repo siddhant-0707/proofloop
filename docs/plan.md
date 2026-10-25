@@ -233,3 +233,18 @@ Agreed on 2026-10-25; the product is renamed Cascade (the code and repo keep the
   The loop still records every round in the transcript; only the web app stops showing it.
 - **Download PDF:** a menu in the report header offers the full plan report (with a snapshot of the map), the field briefing (assignments and town steps), the backup plans, or the other plans (one per page).
   It prints a letterhead version of the report through the browser's print dialog, with the file name set from the page title ("Cascade - Full plan report - Whole area - $150,000"); in the print view every stress case is listed instead of the worst five.
+
+## Runs play on the map (#31)
+
+Agreed on 2026-10-25 for the demo, on the `demo-visuals` branch; replaces the Running screen in "Three screens over one map" and the Run card in "Cascade: a plain report and PDF downloads".
+The report stays plain: no Planner, Adversary, Verifier, rounds or models.
+
+- **No veil:** while a run plays, the map is the stage; a counter along the top shows people at risk, sheltered, and budget used (with any reserve held back), and a caption bar along the bottom says what is happening.
+- **Beats:** each streamed round plays as beats from a pure storyboard: the Planner's shelters light up (rings sized by capacity) and curved arcs run from each town to its shelters, labelled with people (transport arcs in their own color), then the Verifier's verdict lands as a "Verified" or "Rejected" stamp with the reason.
+  Here the run does name the Planner, the Verifier, rounds and Gemma 4: showing the agents at work is the point of the demo.
+- **Pacing:** beats play from a queue, about 5 s for a plan and 3 s for a verdict, so the instant engine is watchable; while the next round is on its way, the caption says what the run is doing ("Round 2 · Gemma 4 is attacking the last plan and drafting a stronger one").
+- **Progress:** one segment per round plus one for the report, done, current (pulsing) or to come, instead of an estimated percent.
+- **Skip and Cancel:** Skip stops the playback and opens the report as soon as the run ends; Cancel returns to the start.
+  The report (or the budget question) opens once the last beat has had its time.
+- **Arcs, not roads:** arcs are drawn town to shelter because the Simulation moves people over grid steps through dry cells, not along roads; people flooded outside every town get no arc.
+- It still never says "stress test".
