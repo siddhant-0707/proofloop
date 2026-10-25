@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Cascade",
-  description: "Cascade: disaster plans that survive the cascade.",
+  title: "cascade.ai",
+  description: "cascade.ai: disaster plans that survive the cascade.",
 };
 
 export default function RootLayout({

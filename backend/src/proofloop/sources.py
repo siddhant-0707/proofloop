@@ -49,8 +49,8 @@ SOURCES: tuple[Source, ...] = (
     ),
     Source(
         id="S4",
-        title="Cascade planning method",
-        origin="Cascade method notes (docs/plan.md)",
+        title="cascade.ai planning method",
+        origin="cascade.ai method notes (docs/plan.md)",
         summary=(
             "People in flooded cells are affected. They can reach an open shelter through dry "
             "cells within a fixed travel distance. Each shelter takes at most its capacity, "
@@ -77,7 +77,7 @@ SOURCES: tuple[Source, ...] = (
             "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/2"
         ),
         summary=(
-            "Population of every 2020 Census block. Cascade spreads each block's people "
+            "Population of every 2020 Census block. cascade.ai spreads each block's people "
             "evenly over the cells it covers; it counts residents, not who was home during "
             "the storm."
         ),

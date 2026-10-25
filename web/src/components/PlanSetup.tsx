@@ -55,7 +55,7 @@ export default function PlanSetup({
       <div className="flex items-center gap-3 px-6 pt-6">
         <Logo className="size-10 drop-shadow-sm" />
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900">Cascade</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-slate-900">cascade.ai</h1>
           <p className="text-xs text-slate-500">Disaster plans that survive the cascade</p>
         </div>
       </div>

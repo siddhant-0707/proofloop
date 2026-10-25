@@ -1,6 +1,6 @@
 import { useId } from "react";
 
-/** Cascade's mark: three falling waves on a sky-to-teal tile. */
+/** cascade.ai's mark: three falling waves on a sky-to-teal tile. */
 export default function Logo({ className = "size-9" }: { className?: string }) {
   const tile = useId();
   return (

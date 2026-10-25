@@ -48,7 +48,7 @@ from proofloop.world.store import load_world
 # Variables already set in the shell win over backend/.env.
 load_dotenv(BACKEND_DIR / ".env", override=False)
 
-app = FastAPI(title="Cascade")
+app = FastAPI(title="cascade.ai")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 

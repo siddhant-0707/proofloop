@@ -292,7 +292,7 @@ export function PrintableReport({
         <div className="mb-6 flex items-center justify-between border-b border-slate-200 pb-3">
           <span className="flex items-center gap-2">
             <Logo className="size-7" />
-            <span className="text-base font-semibold tracking-tight">Cascade</span>
+            <span className="text-base font-semibold tracking-tight">cascade.ai</span>
           </span>
           <span className="text-right text-xs text-slate-500">
             {title}
@@ -418,7 +418,7 @@ function Document({
           </ul>
           <p className="mt-2 text-xs text-slate-500">
             Format: base-plan headings from FEMA CPG 101 v3 (2021), with objectives and
-            assignments in the style of ICS forms 202 and 204. Prepared by Cascade for planning
+            assignments in the style of ICS forms 202 and 204. Prepared by cascade.ai for planning
             exercises; not an official county document.
           </p>
         </>
