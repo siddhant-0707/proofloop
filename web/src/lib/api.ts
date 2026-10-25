@@ -71,6 +71,8 @@ export type Assignment = {
   resource: string;
   work: string;
   people: number | null;
+  /** A shelter's spaces; null for other kinds. */
+  capacity: number | null;
   cost: number;
   funded: boolean;
 };

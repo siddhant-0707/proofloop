@@ -239,6 +239,7 @@ def _shelter(
         resource=f"{people(capacity)} spaces",
         work=work,
         people=arrivals,
+        capacity=capacity,
         cost=cost,
         funded=funded,
     )

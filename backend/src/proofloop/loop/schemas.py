@@ -186,6 +186,8 @@ class Assignment(_Model):
     resource: str
     work: str
     people: float | None = None
+    # A shelter's spaces; None for other kinds.
+    capacity: float | None = None
     cost: float
     funded: bool
 

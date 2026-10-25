@@ -365,7 +365,15 @@ function Shortfall({ rec }: { rec: Recommendation }) {
   );
 }
 
-type Section = { id: string; title: string; body: React.ReactNode };
+/** `folded` sections are background: on screen they open on demand; printed, always open. */
+type Section = { id: string; title: string; body: React.ReactNode; folded?: string };
+
+// Backend sections shown as background, with what the closed section says.
+const FOLDED: Record<string, (lines: string[]) => string> = {
+  "Purpose and scope": (lines) => lines[0] ?? "",
+  "Situation overview": (lines) => lines[0] ?? "",
+  "Planning assumptions": (lines) => `${lines.length} assumptions behind every number`,
+};
 
 /** One plan report, numbered like an operations plan. */
 function Document({
@@ -381,9 +389,15 @@ function Document({
   extra?: Section[];
 }) {
   const name = usePlaceName();
+  const printing = useContext(Printing);
   const damage = describeDamage(report.scenario, name);
   const all: Section[] = [
-    ...report.sections.map((s) => ({ id: s.title, title: s.title, body: <Lines lines={s.lines} /> })),
+    ...report.sections.map((s) => ({
+      id: s.title,
+      title: s.title,
+      body: <SectionBody title={s.title} lines={s.lines} report={report} />,
+      folded: FOLDED[s.title]?.(s.lines),
+    })),
     {
       id: "assignments",
       title: "Organization and assignment of responsibilities",
@@ -400,10 +414,16 @@ function Document({
       body: <Budget report={report} />,
     },
     ...extra,
-    { id: "limitations", title: "Limitations", body: <Lines lines={report.limitations} /> },
+    {
+      id: "limitations",
+      title: "Limitations",
+      body: <Lines lines={report.limitations} />,
+      folded: `${report.limitations.length} things this plan cannot see`,
+    },
     {
       id: "references",
       title: "References",
+      folded: report.references.map((s) => s.title).join(" · "),
       body: (
         <>
           <ul className="space-y-1 text-sm text-slate-700">
@@ -434,44 +454,169 @@ function Document({
           Hurricane Isaias · budget {dollars(report.scenario.budget)}
           {damage !== "no damage yet" && `; ${damage}`}
         </p>
-        <KeyFigures report={report} />
+        <Summary report={report} />
         {notice}
       </header>
-      <ol className="mt-5 space-y-6">
-        {sections.map((s, i) => (
-          <li key={s.id}>
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-900 print:break-after-avoid">
-              {i + 1}. {s.title}
-            </h3>
-            <div className="mt-2">{s.body}</div>
-          </li>
-        ))}
+      <ol className="mt-5">
+        {sections.map((s, i) =>
+          s.folded != null && !printing ? (
+            // Folded sections in a row sit closer together.
+            <li key={s.id} className={i === 0 ? "" : sections[i - 1].folded != null ? "mt-3" : "mt-6"}>
+              <details className="group rounded-xl border border-slate-200 open:bg-white">
+                <summary className="flex cursor-pointer list-none items-center gap-3 rounded-xl px-4 py-3 transition hover:bg-slate-50">
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold uppercase tracking-wide text-slate-900">
+                      {i + 1}. {s.title}
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-slate-500 group-open:hidden">
+                      {s.folded}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-xs text-slate-400 transition group-open:rotate-180" aria-hidden>
+                    ▾
+                  </span>
+                </summary>
+                <div className="px-4 pb-4">{s.body}</div>
+              </details>
+            </li>
+          ) : (
+            <li key={s.id} className={i === 0 ? "" : "mt-6"}>
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-900 print:break-after-avoid">
+                {i + 1}. {s.title}
+              </h3>
+              <div className="mt-2">{s.body}</div>
+            </li>
+          ),
+        )}
       </ol>
     </article>
   );
 }
 
-function KeyFigures({ report }: { report: Report }) {
-  const { result: r, evidence: e } = report;
-  const figures = [
-    { label: "People affected", value: people(r.people_affected), evidence: e.people_affected },
-    { label: "People sheltered", value: people(r.people_sheltered), evidence: e.people_sheltered },
-    { label: "Share sheltered", value: percent(r.robustness), evidence: e.robustness },
-    { label: "Cost", value: dollars(r.cost), evidence: e.cost },
-    { label: "Budget", value: dollars(report.scenario.budget), evidence: e.budget },
-  ];
+/** The plan at a glance: who it shelters, what it costs, and how far it reaches. */
+function Summary({ report }: { report: Report }) {
+  const { result: r, evidence: e, scenario } = report;
+  const everyone = r.people_unreached < 0.5;
+  const left = scenario.budget - r.cost;
+  const towns = report.briefing.neighborhoods.filter((n) => n.community_id != null);
+  const covered = towns.filter((n) => n.people_unreached < 0.5).length;
+  const opened = report.assignments.filter((a) => a.kind === "shelter" && a.funded).length;
+  const seats = report.briefing.neighborhoods.reduce((n, b) => n + b.transport_seats, 0);
+  const reserve = report.assignments.find((a) => a.kind === "reserve");
+  const chips = [
+    `${opened} ${opened === 1 ? "shelter" : "shelters"} opened`,
+    `${covered} of ${towns.length} towns fully covered`,
+    seats > 0 && `${seats.toLocaleString()} transport seats`,
+    reserve && `${dollars(reserve.cost)} held in reserve`,
+  ].filter((c): c is string => Boolean(c));
   return (
-    <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-      {figures.map((f) => (
-        <div key={f.label} className="rounded-lg bg-slate-50 px-3 py-2">
-          <dt className="text-[11px] uppercase tracking-wide text-slate-500">{f.label}</dt>
-          <dd className="text-lg font-semibold tabular-nums text-slate-900">
-            <Num label={f.label} value={f.value} evidence={f.evidence} />
-          </dd>
+    <div className="mt-4 space-y-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div
+          className={`rounded-xl p-4 ring-1 ${everyone ? "bg-emerald-50 ring-emerald-200" : "bg-amber-50 ring-amber-200"}`}
+        >
+          <p
+            className={`text-[11px] font-medium uppercase tracking-wide ${everyone ? "text-emerald-700" : "text-amber-700"}`}
+          >
+            People sheltered
+          </p>
+          <p className="mt-1 flex items-baseline gap-1.5">
+            <span className="text-3xl font-semibold tabular-nums text-slate-900">
+              <Num label="People sheltered" value={people(r.people_sheltered)} evidence={e.people_sheltered} />
+            </span>
+            <span className="text-sm text-slate-500">
+              of{" "}
+              <Num label="People affected" value={people(r.people_affected)} evidence={e.people_affected} />{" "}
+              affected
+            </span>
+          </p>
+          <Meter fraction={r.robustness} tone={everyone ? "good" : "warn"} />
+          <p className={`mt-2 text-xs ${everyone ? "text-emerald-800" : "text-amber-800"}`}>
+            {everyone ? "Everyone affected has a shelter" : `${people(r.people_unreached)} left without a shelter`}{" "}
+            · <Num label="Share sheltered" value={percent(r.robustness)} evidence={e.robustness} />
+          </p>
         </div>
-      ))}
-    </dl>
+        <div className="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Cost</p>
+          <p className="mt-1 flex items-baseline gap-1.5">
+            <span className="text-3xl font-semibold tabular-nums text-slate-900">
+              <Num label="Cost" value={dollars(r.cost)} evidence={e.cost} />
+            </span>
+            <span className="text-sm text-slate-500">
+              of <Num label="Budget" value={dollars(scenario.budget)} evidence={e.budget} /> budget
+            </span>
+          </p>
+          <Meter fraction={Math.min(1, r.cost / scenario.budget)} tone={left < 0 ? "bad" : "neutral"} />
+          <p className={`mt-2 text-xs ${left < 0 ? "text-red-700" : "text-slate-600"}`}>
+            {left < 0 ? `${dollars(-left)} over budget` : `${dollars(left)} left unspent`}
+          </p>
+        </div>
+      </div>
+      <ul className="flex flex-wrap gap-2">
+        {chips.map((c) => (
+          <li key={c} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+            {c}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
+}
+
+const METER_TONES = {
+  good: "bg-emerald-500",
+  warn: "bg-amber-500",
+  bad: "bg-red-500",
+  neutral: "bg-sky-500",
+};
+
+function Meter({ fraction, tone }: { fraction: number; tone: keyof typeof METER_TONES }) {
+  return (
+    <div className="mt-3 h-2 overflow-hidden rounded-full bg-white ring-1 ring-inset ring-slate-200">
+      <div
+        className={`h-full rounded-full ${METER_TONES[tone]}`}
+        style={{ width: `${Math.max(0, Math.min(1, fraction)) * 100}%` }}
+      />
+    </div>
+  );
+}
+
+/** A backend section, drawn for what it holds: objectives as checks, the concept as a callout. */
+function SectionBody({ title, lines, report }: { title: string; lines: string[]; report: Report }) {
+  const { result: r, scenario } = report;
+  if (title === "Objectives") {
+    // The backend lists sheltering first and the budget last; between them, the transport
+    // and reserve the plan funds, which it meets by funding them.
+    const met = (i: number) =>
+      i === 0 ? r.people_unreached < 0.5 : i === lines.length - 1 ? r.cost <= scenario.budget : true;
+    return (
+      <ul className="space-y-2">
+        {lines.map((line, i) => (
+          <li key={line} className="flex items-start gap-2.5 text-sm text-slate-800">
+            <span
+              className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
+                met(i) ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+              }`}
+              aria-label={met(i) ? "Met" : "Not met"}
+            >
+              {met(i) ? "✓" : "!"}
+            </span>
+            {line}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (title === "Concept of operations") {
+    return (
+      <div className="space-y-1.5 rounded-xl border-l-4 border-sky-500 bg-sky-50/70 px-4 py-3 text-sm leading-relaxed text-slate-800">
+        {lines.map((line) => (
+          <p key={line}>{line}</p>
+        ))}
+      </div>
+    );
+  }
+  return <Lines lines={lines} />;
 }
 
 function Lines({ lines }: { lines: string[] }) {
@@ -493,44 +638,70 @@ const KIND_LABEL: Record<Assignment["kind"], string> = {
 function Assignments({ report }: { report: Report }) {
   if (report.assignments.length === 0) return <Lines lines={["No assignments."]} />;
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead className="text-[11px] uppercase tracking-wide text-slate-500">
-          <tr className="border-b border-slate-200">
-            <th className="py-1.5 pr-3 font-medium">Function</th>
-            <th className="py-1.5 pr-3 font-medium">Assignment</th>
-            <th className="py-1.5 pr-3 font-medium">Resources</th>
-            <th className="py-1.5 pr-3 font-medium">Work</th>
-            <th className="py-1.5 pr-3 text-right font-medium">People</th>
-            <th className="py-1.5 text-right font-medium">Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          {report.assignments.map((a) => (
-            <tr
-              key={a.title}
-              className={`border-b border-slate-100 align-top ${a.funded ? "" : "text-slate-400"}`}
-            >
-              <td className="py-2 pr-3 text-slate-500">{KIND_LABEL[a.kind]}</td>
-              <td className="py-2 pr-3 font-medium text-slate-900">
-                {a.title}
-                {!a.funded && (
-                  <span className="ml-1.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
-                    not funded
-                  </span>
-                )}
-              </td>
-              <td className="py-2 pr-3">{a.resource}</td>
-              <td className="py-2 pr-3 text-slate-600">{a.work}</td>
-              <td className="py-2 pr-3 text-right tabular-nums">
-                {a.people == null ? "–" : people(a.people)}
-              </td>
-              <td className="py-2 text-right tabular-nums">{dollars(a.cost)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ul className="grid gap-3 sm:grid-cols-2">
+      {report.assignments.map((a) => (
+        <AssignmentCard key={a.title} a={a} report={report} />
+      ))}
+    </ul>
+  );
+}
+
+/** One assignment: a shelter shows how full it gets and which towns fill it. */
+function AssignmentCard({ a, report }: { a: Assignment; report: Report }) {
+  const shelter = a.kind === "shelter" ? a.title.replace(/^Open /, "") : null;
+  const from = shelter
+    ? report.briefing.neighborhoods.flatMap((n) =>
+        n.shelters
+          .filter((s) => s.name === shelter && s.people >= 0.5)
+          .map((s) => ({ town: n.community_id == null ? "Outside the towns" : n.name, people: s.people })),
+      )
+    : [];
+  return (
+    <li
+      className={`break-inside-avoid rounded-xl border p-4 ${a.funded ? "border-slate-200" : "border-dashed border-amber-300 bg-amber-50/40"}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-600">
+          {KIND_LABEL[a.kind]}
+        </span>
+        <span className="text-sm font-semibold tabular-nums text-slate-900">{dollars(a.cost)}</span>
+      </div>
+      <p className={`mt-2 font-semibold ${a.funded ? "text-slate-900" : "text-slate-500"}`}>
+        {a.title}
+        {!a.funded && (
+          <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 align-middle text-[10px] font-medium text-amber-800">
+            not funded
+          </span>
+        )}
+      </p>
+      {a.capacity != null && a.people != null ? (
+        <>
+          <div className="mt-2 flex items-baseline justify-between text-xs text-slate-600">
+            <span>
+              <span className="font-semibold text-slate-900">{people(a.people)}</span> expected
+            </span>
+            <span>{people(a.capacity)} spaces</span>
+          </div>
+          <Meter fraction={a.capacity ? a.people / a.capacity : 0} tone="neutral" />
+          {from.length > 0 && (
+            <ul className="mt-3 flex flex-wrap gap-1.5">
+              {from.map((f) => (
+                <li
+                  key={f.town}
+                  className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] text-sky-800 ring-1 ring-sky-200"
+                >
+                  {f.town} · {people(f.people)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      ) : (
+        <p className="mt-1 text-xs leading-relaxed text-slate-600">
+          {a.resource} · {a.work}
+        </p>
+      )}
+    </li>
   );
 }
 
@@ -588,7 +759,7 @@ function Briefing({ briefing, report }: { briefing: Briefing; report: Report }) 
           {copied ? "Copied" : "Copy briefing"}
         </button>
       </div>
-      <ul className="mt-2 grid gap-3 sm:grid-cols-2">
+      <ul className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
         {briefing.neighborhoods.map((n) => (
           <Neighborhood key={n.community_id ?? "outside"} n={n} report={report} />
         ))}
@@ -597,48 +768,69 @@ function Briefing({ briefing, report }: { briefing: Briefing; report: Report }) 
   );
 }
 
+/** One town's row: how many it shelters, where they go, and any steps beyond that. */
 function Neighborhood({ n, report }: { n: NeighborhoodBriefing; report: Report }) {
   const e = report.evidence;
+  const short = n.people_unreached >= 0.5;
+  // The steps only repeat the row when everyone walks to a shelter; show them otherwise.
+  const steps = short || n.transport_seats > 0 || n.road_closed;
   const tags = [
     n.road_closed && "Road closed",
     n.transport_seats > 0 && `${n.transport_seats} transport seats`,
-  ].filter(Boolean);
+  ].filter((t): t is string => Boolean(t));
   return (
-    <li className="break-inside-avoid rounded-lg border border-slate-200 p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm font-medium text-slate-900">{n.name}</span>
-        <span className="flex gap-1">
+    <li className="break-inside-avoid px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span
+          className={`flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
+            short ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"
+          }`}
+          aria-label={short ? "Some cannot reach a shelter" : "Everyone reaches a shelter"}
+        >
+          {short ? "!" : "✓"}
+        </span>
+        <span className="w-32 text-sm font-medium text-slate-900">{n.name}</span>
+        <span className="w-36 whitespace-nowrap text-xs tabular-nums text-slate-600">
+          <Num
+            label={`People sheltered in ${n.name}`}
+            value={people(n.people_sheltered)}
+            evidence={e.people_sheltered}
+            partOfRun
+          />{" "}
+          of{" "}
+          <Num
+            label={`People affected in ${n.name}`}
+            value={people(n.people_affected)}
+            evidence={e.people_affected}
+            partOfRun
+          />{" "}
+          sheltered
+        </span>
+        <span className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+          {n.shelters
+            .filter((s) => s.people >= 0.5)
+            .map((s) => (
+              <span
+                key={s.shelter_id}
+                className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] text-sky-800 ring-1 ring-sky-200"
+              >
+                → {s.name} · {people(s.people)}
+              </span>
+            ))}
           {tags.map((t) => (
-            <span
-              key={String(t)}
-              className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600"
-            >
+            <span key={t} className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800 ring-1 ring-amber-200">
               {t}
             </span>
           ))}
         </span>
       </div>
-      <p className="text-xs text-slate-500">
-        <Num
-          label={`People affected in ${n.name}`}
-          value={people(n.people_affected)}
-          evidence={e.people_affected}
-          partOfRun
-        />{" "}
-        affected ·{" "}
-        <Num
-          label={`People sheltered in ${n.name}`}
-          value={people(n.people_sheltered)}
-          evidence={e.people_sheltered}
-          partOfRun
-        />{" "}
-        sheltered
-      </p>
-      <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-slate-700 marker:text-slate-300">
-        {n.steps.map((s) => (
-          <li key={s}>{s}</li>
-        ))}
-      </ul>
+      {steps && (
+        <ul className="mt-1.5 ml-8 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-slate-700 marker:text-slate-300">
+          {n.steps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ul>
+      )}
     </li>
   );
 }
