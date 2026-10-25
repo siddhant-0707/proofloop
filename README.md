@@ -1,8 +1,8 @@
-# Cascade
+# cascade.ai
 
-> Most AI tells you what to do. Cascade attacks its own plan until it survives.
+> Most AI tells you what to do. cascade.ai attacks its own plan until it survives.
 
-Cascade (formerly ProofLoop) helps a small county emergency manager build a hurricane response plan that has been stress-tested before anyone acts on it.
+cascade.ai (formerly Cascade and ProofLoop) helps a small county emergency manager build a hurricane response plan that has been stress-tested before anyone acts on it.
 A Planner agent proposes a plan, an Adversary agent attacks it with realistic worst cases, and a deterministic simulation scores every plan against what actually flooded.
 The flood truth comes from NASA-ISRO NISAR L-band radar, whose calibrated data became public in July 2026.
 Our hero scenario is Hurricane Isaias (landfall Oct 9, 2026) in Florida's Big Bend, imaged by NISAR on Sep 28 (before) and Oct 10 (after).

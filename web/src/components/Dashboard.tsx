@@ -258,7 +258,7 @@ function ReportHeader({
       <div className="flex items-center gap-2.5">
         <Logo className="size-8" />
         <div>
-          <p className="text-sm font-semibold text-slate-900">Cascade · plan report</p>
+          <p className="text-sm font-semibold text-slate-900">cascade.ai · plan report</p>
           <p className="text-xs text-slate-500">
             {scenario.scope ? name(scenario.scope) : "Whole area"} · budget{" "}
             {dollars(scenario.budget)}
@@ -353,5 +353,5 @@ function pdfName(transcript: Transcript, what: string, name: (id: string) => str
   const scenario = transcript.base_scenario;
   const where = scenario.scope ? name(scenario.scope) : "Whole area";
   what = PRINT_PARTS.find((p) => p.part === what)?.title ?? what;
-  return `Cascade - ${what} - ${where} - ${dollars(scenario.budget)}`;
+  return `cascade.ai - ${what} - ${where} - ${dollars(scenario.budget)}`;
 }

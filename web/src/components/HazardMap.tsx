@@ -4,6 +4,7 @@ import maplibregl, { type ExpressionSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useState } from "react";
 
+import { SWIPE_LAYER, SwipeDivider, useFloodSwipe } from "@/components/FloodSwipe";
 import {
   fetchExposure,
   fetchFloodCells,
@@ -65,7 +66,7 @@ const START_CARD_HEIGHT = 420;
 
 type LayerGroup = "flooding" | "fema" | "population" | "shelters";
 const GROUP_LAYERS: Record<LayerGroup, string[]> = {
-  flooding: ["flood-surface", "flood-cells", "flood-people"],
+  flooding: ["flood-surface", SWIPE_LAYER, "flood-cells", "flood-people"],
   fema: ["fema-zones"],
   population: ["population"],
   shelters: ["shelter-dots", "shelter-labels"],
@@ -98,6 +99,12 @@ export default function HazardMap({
   const [legendOpen, setLegendOpen] = useState(true);
   const [peopleOnly, setPeopleOnly] = useState(false);
   const [lived, setLived] = useState<{ cells: number; withPeople: number } | null>(null);
+  // Set once the map's own layers are in, for layers added later.
+  const [loaded, setLoaded] = useState<maplibregl.Map | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const [split, setSplit] = useState(0.5);
+  // While comparing: the divider's longitude, left of which no flagged cell is drawn.
+  const dividerLng = useRef<number | null>(null);
   const visibleRef = useRef(visible);
   const peopleOnlyRef = useRef(peopleOnly);
   const scenarioRef = useRef(scenario);
@@ -177,9 +184,10 @@ export default function HazardMap({
         created.on("load", () => {
           addLayers(created, layer, people, cells);
           applyVisibility(created, visibleRef.current);
-          applyPeopleOnly(created, peopleOnlyRef.current);
+          applyCellFilters(created, peopleOnlyRef.current, dividerLng.current);
           applyScenario(created, scenarioRef.current, people);
           if (people) applyBeat(created, beatRef.current, people, framedRef);
+          setLoaded(created);
         });
       }
       map = created;
@@ -194,6 +202,7 @@ export default function HazardMap({
       cancelled = true;
       resize.disconnect();
       mapRef.current = null;
+      setLoaded(null);
       map?.remove();
     };
   }, []);
@@ -254,7 +263,7 @@ export default function HazardMap({
 
   useEffect(() => {
     peopleOnlyRef.current = peopleOnly;
-    if (mapRef.current) applyPeopleOnly(mapRef.current, peopleOnly);
+    if (mapRef.current) applyCellFilters(mapRef.current, peopleOnly, dividerLng.current);
   }, [peopleOnly]);
 
   useEffect(() => {
@@ -287,11 +296,18 @@ export default function HazardMap({
   }
 
   const toggle = (group: LayerGroup) => setVisible((v) => ({ ...v, [group]: !v[group] }));
+  // Not while a run plays over the map.
+  const swipe = comparing && !quiet;
+  useFloodSwipe(loaded, info, swipe, split, (lng) => {
+    dividerLng.current = lng;
+    if (mapRef.current) applyCellFilters(mapRef.current, peopleOnlyRef.current, lng);
+  });
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-slate-100">
       {/* Sized directly: maplibre-gl.css forces position: relative on the map container. */}
       <div ref={container} className="h-full w-full" />
+      {swipe && <SwipeDivider split={split} onSplit={setSplit} />}
 
       {!quiet && (
         <div className="absolute right-3 bottom-8 w-[17rem] rounded-lg bg-white/95 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200">
@@ -304,7 +320,8 @@ export default function HazardMap({
             <span className="text-slate-400">{legendOpen ? "Hide" : "Show"}</span>
           </button>
           {legendOpen && (
-            <div className="space-y-2.5 border-t border-slate-100 px-3 pb-3 pt-2">
+            // On a phone, kept clear of the start card above it.
+            <div className="space-y-2.5 border-t border-slate-100 px-3 pb-3 pt-2 max-sm:max-h-[38vh] max-sm:overflow-y-auto">
               <LayerToggle
                 checked={visible.flooding}
                 onChange={() => toggle("flooding")}
@@ -379,6 +396,14 @@ export default function HazardMap({
                     detail={`${exposure.shelters.length} sites · zoom in and click a cell or shelter for details`}
                   />
                 </>
+              )}
+              {info && (
+                <LayerToggle
+                  checked={comparing}
+                  onChange={() => setComparing((on) => !on)}
+                  title="Compare before / after"
+                  detail="Drag the divider: the area on Sep 28, before the storm, against the flooding radar flagged on Oct 10"
+                />
               )}
               {error && <p className="text-red-600">Map layers unavailable: {error}</p>}
             </div>
@@ -742,17 +767,26 @@ function applyScenario(map: maplibregl.Map, scenario: Scenario, exposure: Exposu
 function applyVisibility(map: maplibregl.Map, visible: Record<LayerGroup, boolean>) {
   for (const [group, layers] of Object.entries(GROUP_LAYERS)) {
     for (const id of layers) {
+      // While comparing, the swipe draws the flood surface in its place.
+      const replaced = id === "flood-surface" && map.getLayer(SWIPE_LAYER);
       if (map.getLayer(id)) {
-        map.setLayoutProperty(id, "visibility", visible[group as LayerGroup] ? "visible" : "none");
+        map.setLayoutProperty(id, "visibility", visible[group as LayerGroup] && !replaced ? "visible" : "none");
       }
     }
   }
 }
 
-/** Show only flagged cells with an estimated resident, or every flagged cell. */
-function applyPeopleOnly(map: maplibregl.Map, peopleOnly: boolean) {
+/** Show only flagged cells with an estimated resident, or every flagged cell; and while
+ * comparing, only those right of the divider at `fromLng`. */
+function applyCellFilters(map: maplibregl.Map, peopleOnly: boolean, fromLng: number | null) {
+  const lived: ExpressionSpecification = [">=", ["get", "p"], SOMEONE_LIVES];
+  const right: ExpressionSpecification[] = fromLng == null ? [] : [[">=", ["get", "x"], fromLng]];
+  const cells = [...(peopleOnly ? [lived] : []), ...right];
   if (map.getLayer("flood-cells")) {
-    map.setFilter("flood-cells", peopleOnly ? [">=", ["get", "p"], SOMEONE_LIVES] : null);
+    map.setFilter("flood-cells", cells.length ? ["all", ...cells] : null);
+  }
+  if (map.getLayer("flood-people")) {
+    map.setFilter("flood-people", ["all", lived, ...right]);
   }
 }
 
@@ -1091,7 +1125,8 @@ function floodCellSquares(cells: FloodCells, grid: GridShape): GeoJSON.FeatureCo
     type: "FeatureCollection",
     features: cells.cells.map(([lon, lat, k, , p]) => {
       const [row, col] = cellIndex(grid, lon, lat);
-      return { type: "Feature", properties: { k, p }, geometry: square(grid, row, col, 1) };
+      // `x`: the cell's longitude, for the before/after divider.
+      return { type: "Feature", properties: { k, p, x: lon }, geometry: square(grid, row, col, 1) };
     }),
   };
 }
