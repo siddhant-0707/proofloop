@@ -18,6 +18,7 @@ def save_world(world: World, path: Path) -> None:
         "shelters": [asdict(s) for s in world.shelters],
         "communities": [asdict(c) for c in world.communities],
         "transport_cost_per_seat": world.transport_cost_per_seat,
+        "outreach_cost": world.outreach_cost,
     }
     arrays: dict[str, Any] = {
         "latitude": world.grid.latitude,
@@ -28,6 +29,8 @@ def save_world(world: World, path: Path) -> None:
     }
     if world.hazard.kind is not None:
         arrays["kind"] = world.hazard.kind
+    if world.in_fema_zone is not None:
+        arrays["in_fema_zone"] = world.in_fema_zone
     with path.open("wb") as f:
         np.savez_compressed(f, meta=np.array(json.dumps(meta)), **arrays)
 
@@ -50,4 +53,6 @@ def load_world(path: Path) -> World:
             transport_cost_per_seat=meta.get(
                 "transport_cost_per_seat", World.transport_cost_per_seat
             ),
+            in_fema_zone=data["in_fema_zone"] if "in_fema_zone" in data else None,
+            outreach_cost=meta.get("outreach_cost", World.outreach_cost),
         )

@@ -20,7 +20,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from proofloop.api.hazard_image import hazard_bounds, hazard_png, population_png
+from proofloop.api.hazard_image import fema_zone_png, hazard_bounds, hazard_png, population_png
 from proofloop.gemma.agents import GemmaAdversary, GemmaPlanner
 from proofloop.gemma.client import GemmaClient
 from proofloop.gemma.providers import providers_from_env
@@ -66,7 +66,9 @@ class HazardLayerInfo(BaseModel):
 
 class FloodCells(BaseModel):
     kinds: dict[int, str]  # FloodKind value -> name; 0 when the method cannot tell kinds apart
-    cells: list[list[float]]  # [lon, lat, kind, confidence, people] per flagged cell
+    cells: list[
+        list[float]
+    ]  # [lon, lat, kind, confidence, people, outside FEMA zones (0/1)] per flagged cell
 
 
 class ShelterInfo(BaseModel):
@@ -88,6 +90,9 @@ class CommunityInfo(BaseModel):
 class ExposureInfo(BaseModel):
     total_population: float
     people_in_flooded_cells: float
+    # Affected people outside FEMA flood zones; None when the zones are not loaded.
+    people_outside_fema_zones: float | None
+    fema_zones_image_url: str
     population_image_url: str
     shelters: list[ShelterInfo]
     communities: list[CommunityInfo]
@@ -139,7 +144,7 @@ def _hazard_png_bytes() -> bytes:
 
 @app.get("/api/flood-cells")
 def flood_cells() -> FloodCells:
-    """Every flagged cell as [lon, lat, kind, confidence, people], for vector rendering."""
+    """Every flagged cell as [lon, lat, kind, confidence, people, outside FEMA zones (0/1)]."""
     world = big_bend_world()
     rows, cols = np.nonzero(world.hazard.flooded)
     kind = world.hazard.kind
@@ -151,9 +156,22 @@ def flood_cells() -> FloodCells:
             kinds,
             world.hazard.confidence[rows, cols].round(2),
             world.population[rows, cols].round(1),
+            world.flooded_outside_fema_zones()[rows, cols].astype(np.uint8),
         ]
     )
     return FloodCells(kinds={int(k): k.name.lower() for k in FloodKind}, cells=cells.tolist())
+
+
+@app.get("/api/fema-zones.png")
+def fema_zones_image() -> Response:
+    return Response(
+        content=_fema_png_bytes(), media_type="image/png", headers={"Cache-Control": "no-cache"}
+    )
+
+
+@lru_cache(maxsize=1)
+def _fema_png_bytes() -> bytes:
+    return fema_zone_png(big_bend_world())
 
 
 @app.get("/api/exposure")
@@ -163,6 +181,12 @@ def exposure() -> ExposureInfo:
     return ExposureInfo(
         total_population=float(world.population.sum()),
         people_in_flooded_cells=float(world.population[world.hazard.flooded].sum()),
+        people_outside_fema_zones=(
+            float(world.population[world.flooded_outside_fema_zones()].sum())
+            if world.in_fema_zone is not None
+            else None
+        ),
+        fema_zones_image_url="/api/fema-zones.png",
         population_image_url="/api/population.png",
         shelters=[
             ShelterInfo(

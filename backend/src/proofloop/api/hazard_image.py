@@ -26,6 +26,9 @@ MIN_ALPHA, MAX_ALPHA = 110, 220
 POPULATION_RGB = np.array([51, 65, 85])
 POPULATION_MIN_DENSITY = 1.0
 POPULATION_DECADES = 3.0
+# FEMA Special Flood Hazard Area: a light, even tint. Keep in sync with HazardMap.tsx.
+FEMA_ZONE_RGB = np.array([20, 184, 166])
+FEMA_ZONE_ALPHA = 70
 
 
 def hazard_bounds(world: World) -> BBox:
@@ -72,6 +75,20 @@ def population_png(world: World) -> bytes:
         t = np.clip(np.log10(density / POPULATION_MIN_DENSITY) / POPULATION_DECADES, 0.0, 1.0)
     rgb = np.broadcast_to(POPULATION_RGB, (*density.shape, 3)).astype(np.uint8)
     alpha = np.where(density >= POPULATION_MIN_DENSITY, 40 + 160 * t, 0).astype(np.uint8)
+    return _png(rgb, alpha)
+
+
+def fema_zone_png(world: World) -> bytes:
+    """Cells inside FEMA's Special Flood Hazard Area, one light tint; empty if not loaded."""
+    bounds = hazard_bounds(world)
+    rows = _mercator_rows(world.grid.latitude, bounds.north, bounds.south)
+    zone = (
+        world.in_fema_zone[rows]
+        if world.in_fema_zone is not None
+        else np.zeros((rows.size, world.grid.shape[1]), dtype=bool)
+    )
+    rgb = np.broadcast_to(FEMA_ZONE_RGB, (*zone.shape, 3)).astype(np.uint8)
+    alpha = np.where(zone, FEMA_ZONE_ALPHA, 0).astype(np.uint8)
     return _png(rgb, alpha)
 
 

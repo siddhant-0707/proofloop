@@ -1,7 +1,8 @@
 """Small hand-drawn Worlds and agent responses for Loop tests.
 
 Worlds are drawn as small maps:
-    ~  flooded cell holding `pop` affected people
+    ~  flooded cell holding `pop` affected people, inside a FEMA flood zone
+    o  flooded cell holding `pop` affected people, outside any FEMA flood zone
     .  dry, passable cell
     A-Z shelter on a dry cell
 """
@@ -11,6 +12,7 @@ import numpy as np
 from proofloop.world import Community, Grid, HazardLayer, Shelter, World
 
 TRANSPORT_COST_PER_SEAT = 150.0
+OUTREACH_COST = 5_000.0
 
 
 def world_from_map(
@@ -19,7 +21,8 @@ def world_from_map(
     """shelters maps a letter to (capacity, cost); communities maps an id to (row, col, radius)."""
     shelters = shelters or {}
     communities = communities or {}
-    flooded = np.array([[ch == "~" for ch in row] for row in rows])
+    flooded = np.array([[ch in "~o" for ch in row] for row in rows])
+    in_fema_zone = np.array([[ch == "~" for ch in row] for row in rows])
     n_rows, n_cols = flooded.shape
     return World(
         grid=Grid(
@@ -45,6 +48,8 @@ def world_from_map(
         ),
         reach_cells=reach_cells,
         transport_cost_per_seat=TRANSPORT_COST_PER_SEAT,
+        in_fema_zone=in_fema_zone,
+        outreach_cost=OUTREACH_COST,
     )
 
 
@@ -86,3 +91,11 @@ def road_closed(community_id: str) -> dict:
 
 def budget_cut(percent: float) -> dict:
     return {"type": "budget_cut", "percent": percent}
+
+
+def outreach(community_id: str) -> dict:
+    return {"type": "target_outreach", "community_id": community_id}
+
+
+def unwarned() -> dict:
+    return {"type": "unwarned_outside_zone"}

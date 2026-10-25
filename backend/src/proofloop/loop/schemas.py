@@ -14,6 +14,9 @@ class Scenario(_Model):
     offline_shelters: frozenset[str] = frozenset()
     # Communities whose land access is cut: their people cannot reach a shelter on their own.
     closed_communities: frozenset[str] = frozenset()
+    # People flooded outside FEMA flood zones believe they are safe and stay home unless
+    # outreach reaches their community.
+    unwarned_outside_zones: bool = False
 
     def with_offline(self, shelter_id: str) -> "Scenario":
         return self.model_copy(update={"offline_shelters": self.offline_shelters | {shelter_id}})
@@ -21,6 +24,9 @@ class Scenario(_Model):
     def with_closed(self, community_id: str) -> "Scenario":
         closed = self.closed_communities | {community_id}
         return self.model_copy(update={"closed_communities": closed})
+
+    def with_unwarned(self) -> "Scenario":
+        return self.model_copy(update={"unwarned_outside_zones": True})
 
     def with_budget_cut(self, percent: float) -> "Scenario":
         return self.model_copy(update={"budget": self.budget * (1 - percent / 100)})
@@ -47,7 +53,16 @@ class AllocateBudget(_Model):
     amount: float = Field(ge=1_000)
 
 
-Action = Annotated[OpenShelter | StageTransport | AllocateBudget, Field(discriminator="type")]
+class TargetOutreach(_Model):
+    """Warn a community's people flooded outside FEMA zones that they are at risk."""
+
+    type: Literal["target_outreach"] = "target_outreach"
+    community_id: str
+
+
+Action = Annotated[
+    OpenShelter | StageTransport | AllocateBudget | TargetOutreach, Field(discriminator="type")
+]
 
 
 class Claims(_Model):
@@ -68,9 +83,13 @@ class Plan(_Model):
 
     @property
     def community_ids(self) -> list[str]:
-        """Communities the plan stages transport for, in plan order, without repeats."""
+        """Communities the plan sends transport or outreach to, in plan order, without repeats."""
         return list(
-            dict.fromkeys(a.community_id for a in self.actions if isinstance(a, StageTransport))
+            dict.fromkeys(
+                a.community_id
+                for a in self.actions
+                if isinstance(a, StageTransport | TargetOutreach)
+            )
         )
 
 
@@ -93,7 +112,16 @@ class BudgetCut(_Model):
     percent: float = Field(ge=10, le=50)
 
 
-Attack = Annotated[ShelterOffline | RoadClosed | BudgetCut, Field(discriminator="type")]
+class UnwarnedOutsideZone(_Model):
+    """People flooded outside FEMA flood zones think they are safe and stay home."""
+
+    rationale: str = Field(default="", max_length=400)
+    type: Literal["unwarned_outside_zone"] = "unwarned_outside_zone"
+
+
+Attack = Annotated[
+    ShelterOffline | RoadClosed | BudgetCut | UnwarnedOutsideZone, Field(discriminator="type")
+]
 ATTACK = TypeAdapter(Attack)
 
 
@@ -105,6 +133,8 @@ class SimulationResult(_Model):
     robustness: float
     # Actions left without money after a budget cut, in plan order.
     unfunded_actions: int = 0
+    # Affected people outside FEMA flood zones (likely uninsured) whom the plan does not reach.
+    people_unreached_outside_zones: float = 0.0
 
 
 class Check(_Model):

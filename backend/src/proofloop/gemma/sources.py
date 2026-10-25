@@ -58,6 +58,17 @@ SOURCES: tuple[Source, ...] = (
             "costs are planning assumptions."
         ),
     ),
+    Source(
+        id="S5",
+        title="FEMA National Flood Hazard Layer (NFHL) for Dixie and Taylor counties",
+        origin="https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28",
+        summary=(
+            "Special Flood Hazard Areas (here zones A, AE, AH and VE) mark where FEMA expects "
+            "flooding and flood insurance is usually required. People outside them often do "
+            "not expect to flood and are less likely to be insured; most people in "
+            "radar-flagged cells around Perry and Cross City live outside these zones."
+        ),
+    ),
 )
 
 

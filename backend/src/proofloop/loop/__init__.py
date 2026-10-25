@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from proofloop.loop.agents import (
@@ -15,6 +16,7 @@ from proofloop.loop.schemas import (
     ATTACK,
     AgentCall,
     Attack,
+    BudgetCut,
     Plan,
     Recommendation,
     RoadClosed,
@@ -22,6 +24,7 @@ from proofloop.loop.schemas import (
     Scenario,
     ShelterOffline,
     Transcript,
+    UnwarnedOutsideZone,
 )
 from proofloop.loop.simulation import simulate
 from proofloop.loop.verifier import verify
@@ -74,7 +77,7 @@ def run_proofloop(
         verdict = verify(world, current, plan) if plan else None
         result = simulate(world, current, plan) if plan else None
         attack, adversary_error, adversary_call = _ask(
-            lambda raw: _validate_attack(world, raw),
+            partial(_validate_attack, world, current),
             adversary.attack,
             world,
             current,
@@ -137,12 +140,21 @@ def _ask[T](
     return value, error, AgentCall(model=model, provider=provider, seconds=seconds, skipped=skipped)
 
 
-def _validate_attack(world: World, raw: Any) -> Attack:
+def _validate_attack(world: World, scenario: Scenario, raw: Any) -> Attack:
+    """Parse an attack; one on an unknown place, or one already in effect, is invalid."""
     attack = ATTACK.validate_python(raw)
-    if isinstance(attack, ShelterOffline) and world.shelter(attack.shelter_id) is None:
-        raise ValueError(f"unknown shelter {attack.shelter_id}")
-    if isinstance(attack, RoadClosed) and world.community(attack.community_id) is None:
-        raise ValueError(f"unknown community {attack.community_id}")
+    if isinstance(attack, ShelterOffline):
+        if world.shelter(attack.shelter_id) is None:
+            raise ValueError(f"unknown shelter {attack.shelter_id}")
+        if attack.shelter_id in scenario.offline_shelters:
+            raise ValueError(f"shelter {attack.shelter_id} is already offline")
+    if isinstance(attack, RoadClosed):
+        if world.community(attack.community_id) is None:
+            raise ValueError(f"unknown community {attack.community_id}")
+        if attack.community_id in scenario.closed_communities:
+            raise ValueError(f"the road into {attack.community_id} is already closed")
+    if isinstance(attack, UnwarnedOutsideZone) and scenario.unwarned_outside_zones:
+        raise ValueError("people outside FEMA zones are already unwarned")
     return attack
 
 
@@ -151,7 +163,10 @@ def _apply(scenario: Scenario, attack: Attack) -> Scenario:
         return scenario.with_offline(attack.shelter_id)
     if isinstance(attack, RoadClosed):
         return scenario.with_closed(attack.community_id)
-    return scenario.with_budget_cut(attack.percent)
+    if isinstance(attack, BudgetCut):
+        return scenario.with_budget_cut(attack.percent)
+    assert isinstance(attack, UnwarnedOutsideZone)
+    return scenario.with_unwarned()
 
 
 def _recommend(world: World, final: Scenario, rounds: list[Round]) -> Recommendation | None:

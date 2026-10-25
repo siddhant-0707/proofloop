@@ -15,6 +15,7 @@ from pathlib import Path
 
 from proofloop.exposure.census import block_files, download_blocks, load_blocks
 from proofloop.exposure.communities import COMMUNITY_SITES
+from proofloop.exposure.fema import cached_for, download_zones, load_zones, zones_file
 from proofloop.exposure.shelters import SHELTER_SITES
 from proofloop.nisar.gcov import read_gcov, write_gcov_crop
 from proofloop.nisar.manifest import GRANULES, Granule, Product
@@ -27,6 +28,7 @@ from proofloop.world.builder import (
     build_world,
     with_communities,
     with_exposure,
+    with_flood_zones,
 )
 from proofloop.world.store import save_world
 
@@ -58,14 +60,20 @@ def main() -> None:
     pairs = [pair for pair in sme2 if pair is not None]
     world = with_exposure(build_world(BIG_BEND, pairs, gcov), blocks, SHELTER_SITES)
     world = with_communities(world, COMMUNITY_SITES)
+    if not cached_for(BIG_BEND):
+        print("downloading FEMA flood zones")
+        download_zones(BIG_BEND)
+    world = with_flood_zones(world, load_zones(zones_file()))
     save_world(world, WORLD_CACHE)
     rows, cols = world.grid.shape
     affected = world.population[world.hazard.flooded].sum()
+    outside = world.population[world.flooded_outside_fema_zones()].sum()
     print(
         f"wrote {WORLD_CACHE} ({world.hazard.method}, {rows}x{cols} cells, "
         f"{int(world.hazard.flooded.sum())} flagged, {world.population.sum():,.0f} people, "
         f"{affected:,.0f} in flagged cells, {len(world.shelters)} shelters, "
-        f"{len(world.communities)} communities)"
+        f"{len(world.communities)} communities, "
+        f"{outside:,.0f} affected outside FEMA flood zones)"
     )
 
 

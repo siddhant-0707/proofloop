@@ -164,7 +164,12 @@ def test_sends_a_union_as_plain_variants_without_references():
     assert "$ref" not in text and "$defs" not in text and "discriminator" not in text
     assert "oneOf" not in text
     variants = {v["properties"]["type"]["enum"][0]: v for v in schema["anyOf"]}
-    assert set(variants) == {"shelter_offline", "road_closed", "budget_cut"}
+    assert set(variants) == {
+        "shelter_offline",
+        "road_closed",
+        "budget_cut",
+        "unwarned_outside_zone",
+    }
     assert variants["shelter_offline"]["properties"]["shelter_id"] == {
         "type": "string",
         "enum": ["A"],

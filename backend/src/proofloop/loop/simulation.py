@@ -11,6 +11,10 @@ their own; a shelter inside the community stays reachable for them.
 Staged transport then carries a community's remaining people, nearest to its
 center first, into open shelters that still have room, closed road or not.
 
+Once people flooded outside FEMA flood zones are unwarned, they stay home (they
+think they are safe) unless outreach reaches their community; they still count
+as affected.
+
 Actions are funded in plan order while their running cost fits the budget; a
 contingency reserve is money held back, so it needs no funding. A plan that the
 budget (after any cut) cannot fully fund loses its last actions.
@@ -28,6 +32,7 @@ from proofloop.loop.schemas import (
     Scenario,
     SimulationResult,
     StageTransport,
+    TargetOutreach,
 )
 from proofloop.world import Shelter, World
 
@@ -38,6 +43,8 @@ def simulate(world: World, scenario: Scenario, plan: Plan) -> SimulationResult:
     affected = np.where(world.hazard.flooded, world.population, 0.0)
     remaining = affected.copy()
     funded, unfunded = _funded_actions(world, scenario, plan)
+    staying_home = np.where(_staying_home(world, scenario, funded), remaining, 0.0)
+    remaining -= staying_home
 
     room: dict[str, float] = {}  # spare capacity of each open shelter, in plan order
     for action in funded:
@@ -55,6 +62,8 @@ def simulate(world: World, scenario: Scenario, plan: Plan) -> SimulationResult:
         if isinstance(action, StageTransport):
             _transport(world, action, remaining, room)
 
+    remaining += staying_home
+    outside_zones = world.flooded_outside_fema_zones()
     people_affected = float(affected.sum())
     people_unreached = float(remaining.sum())
     people_sheltered = people_affected - people_unreached
@@ -65,6 +74,7 @@ def simulate(world: World, scenario: Scenario, plan: Plan) -> SimulationResult:
         cost=sum(action_cost(world, a) for a in _billable(plan.actions)),
         robustness=people_sheltered / people_affected if people_affected else 1.0,
         unfunded_actions=unfunded,
+        people_unreached_outside_zones=float(remaining[outside_zones].sum()),
     )
 
 
@@ -74,6 +84,8 @@ def action_cost(world: World, action: Action) -> float:
         return shelter.cost if shelter else 0.0
     if isinstance(action, StageTransport):
         return action.seats * world.transport_cost_per_seat
+    if isinstance(action, TargetOutreach):
+        return world.outreach_cost
     return action.amount
 
 
@@ -92,6 +104,17 @@ def _funded_actions(world: World, scenario: Scenario, plan: Plan) -> tuple[list[
         if spent > scenario.budget:
             return actions[:i], len(actions) - i
     return actions, 0
+
+
+def _staying_home(world: World, scenario: Scenario, funded: list[Action]) -> np.ndarray:
+    """Cells whose people stay home: unwarned, outside FEMA zones, and missed by outreach."""
+    staying = world.flooded_outside_fema_zones() if scenario.unwarned_outside_zones else None
+    if staying is None or not staying.any():
+        return np.zeros(world.grid.shape, dtype=bool)
+    for action in funded:
+        if isinstance(action, TargetOutreach) and (c := world.community(action.community_id)):
+            staying &= ~c.mask(world.grid.shape)
+    return staying
 
 
 def _billable(actions: list[Action]) -> list[Action]:

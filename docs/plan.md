@@ -97,3 +97,24 @@ Agreed on 2026-10-24.
 - **Gemma:** the draft check lists the exact cost of each action, because Gemma copied totals well but added them badly.
   Transport is only offered for communities with affected people.
   On the Gemini API fallback, Gemma loops on the Attack union with a rationale, so OpenRouter is effectively the only working provider for the full menus.
+
+## Flooded outside the flood zone (#8)
+
+Agreed on 2026-10-24.
+
+- **FEMA flood zones:** Special Flood Hazard Area polygons (SFHA_TF = 'T': zones A, AE, AH, VE) from FEMA's National Flood Hazard Layer web service, downloaded once on the first `world.build` and cached in `data/raw/fema`.
+  A cell is inside a FEMA zone when its center lies in one of those polygons; zone X and unmapped land are outside.
+  8,261 polygons cover 44.6% of the World's cells.
+- **Finding:** 659 of the 960 people in radar-flagged cells live outside FEMA flood zones: Perry 253, Cross City 115, Steinhatchee 17.
+  Those inland flags are mostly radar brightening under tree canopy, so the claim is radar-observed water change outside FEMA zones, not confirmed flooding.
+- **Attack, unwarned outside the flood zone:** from the next round on, affected people outside FEMA zones believe they are safe and stay home; they still count as affected.
+- **Counter, target outreach (community):** $5,000 per community (an assumption: door-to-door teams, reverse 911 calls, radio).
+  Once people are unwarned, outreach makes a community's people outside the zones seek shelter like everyone else.
+  Before the attack it changes nothing, so the Planner has to anticipate it.
+  People outside every community's 4 km radius cannot be reached by outreach.
+- **Every Simulation result** reports the affected people outside FEMA zones whom the plan does not reach.
+- **Map:** a FEMA flood zone toggle tints the Special Flood Hazard Area and outlines flagged blocks and cells where people live outside the zones.
+- **Second Planner check (agreed 2026-10-24):** if the Planner's final plan would still fail verification (over budget or wrong claims), it gets one more check with the exact numbers and the Verifier's reasons.
+  In live runs this turns some rejected rounds into verified ones; Gemma still sometimes overspends by a few thousand dollars, and the Verifier rejects those.
+- **No repeated attacks:** an attack already in effect (a shelter already offline, a road already closed, people already unwarned) is invalid Adversary output.
+  Gemma's Adversary is only offered roads still open, and the unwarned attack is removed from its schema once in effect.
