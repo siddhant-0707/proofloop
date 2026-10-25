@@ -31,16 +31,6 @@ const TOWNS: [string, number, number][] = [
   ["Suwannee", -83.143, 29.326],
 ];
 
-// Jump-to views; the first fits the whole study area.
-const VIEWS: { label: string; center?: [number, number]; zoom?: number }[] = [
-  { label: "Whole area" },
-  { label: "Steinhatchee", center: [-83.385, 29.67], zoom: 13 },
-  { label: "Horseshoe Beach", center: [-83.29, 29.44], zoom: 13.5 },
-  { label: "Suwannee", center: [-83.14, 29.325], zoom: 13.5 },
-  { label: "Cross City", center: [-83.12, 29.635], zoom: 12.5 },
-  { label: "Perry", center: [-83.575, 30.115], zoom: 12.5 },
-];
-
 // Keep in sync with KIND_RAMPS in the backend's hazard_image.py (darkest stop).
 const KIND_COLORS: Record<number, string> = {
   0: "#d7191c", // flagged, kind unknown (SME2 fallback)
@@ -75,6 +65,10 @@ const BLOCK_LEVELS = [
   { factor: 3, minzoom: 12.5, maxzoom: 13.5 },
 ].map((level) => ({ ...level, id: `flood-blocks-${level.factor}` }));
 const CELLS_MINZOOM = 13.5;
+// Fewer people than this rounds to 0 in the popups.
+const SOMEONE_LIVES = 0.5;
+// Shows a town's 4 km planning radius with some surroundings.
+const SCOPE_ZOOM = 11.5;
 const KIND_LABELS: Record<number, string> = {
   0: "Flagged as flooded",
   1: "Open water (radar darkened)",
@@ -86,17 +80,26 @@ const TOWN_RADIUS = 3.5;
 const PEOPLE_RING = "#f59e0b";
 // Keep in sync with FEMA_ZONE_RGB / FEMA_ZONE_ALPHA in hazard_image.py.
 const FEMA_ZONE_TINT = "rgba(20, 184, 166, 0.27)";
-const OUTSIDE_ZONE_LINE = "#db2777";
 
-type LayerGroup = "flooding" | "fema" | "population" | "shelters";
+// FEMA flood zones are always drawn, as map context only.
+type LayerGroup = "flooding" | "population" | "shelters";
 const GROUP_LAYERS: Record<LayerGroup, string[]> = {
   flooding: [...BLOCK_LEVELS.map((l) => l.id), "flood-cells", "flood-people"],
-  fema: ["fema-zones", ...BLOCK_LEVELS.map((l) => `${l.id}-outside`), "flood-outside"],
   population: ["population"],
   shelters: ["shelter-dots", "shelter-labels"],
 };
 
-export default function HazardMap({ scenario }: { scenario: Scenario }) {
+/** The study-area map. It fills its container; `quiet` hides the legend (while a run plays
+ * over it) and `compact` folds it (beside the report). */
+export default function HazardMap({
+  scenario,
+  quiet = false,
+  compact = false,
+}: {
+  scenario: Scenario;
+  quiet?: boolean;
+  compact?: boolean;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [info, setInfo] = useState<HazardLayerInfo | null>(null);
@@ -104,14 +107,18 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
   const [error, setError] = useState<string | null>(null);
   const [visible, setVisible] = useState<Record<LayerGroup, boolean>>({
     flooding: true,
-    fema: false,
     population: false,
     shelters: true,
   });
   const [legendOpen, setLegendOpen] = useState(true);
+  const [peopleOnly, setPeopleOnly] = useState(false);
+  const [lived, setLived] = useState<{ cells: number; withPeople: number } | null>(null);
   const visibleRef = useRef(visible);
+  const peopleOnlyRef = useRef(peopleOnly);
   const scenarioRef = useRef(scenario);
   const exposureRef = useRef<ExposureInfo | null>(null);
+  const compactRef = useRef(compact);
+  compactRef.current = compact;
 
   useEffect(() => {
     let map: maplibregl.Map | null = null;
@@ -135,9 +142,15 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
       setInfo(hazard);
       setExposure(people);
       exposureRef.current = people;
+      if (cells) {
+        setLived({
+          cells: cells.cells.length,
+          withPeople: cells.cells.filter(([, , , , p]) => p >= SOMEONE_LIVES).length,
+        });
+      }
 
       const b = hazard?.bounds;
-      const pad = 0.35;
+      const pad = 2.5;
       const created = new maplibregl.Map({
         container: container.current,
         style: BASEMAP,
@@ -147,31 +160,33 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
               [b.east, b.north],
             ]
           : FLORIDA,
-        fitBoundsOptions: { padding: 24 },
+        fitBoundsOptions: { padding: fitPadding(container.current, compactRef.current) },
         maxBounds: b
           ? [
               [b.west - pad, b.south - pad],
               [b.east + pad, b.north + pad],
             ]
           : undefined,
-        minZoom: 7,
+        minZoom: 5.5,
         maxZoom: 16.5,
         dragRotate: false,
         pitchWithRotate: false,
         touchPitch: false,
         hash: true,
         attributionControl: { compact: true },
+        // Lets the PDF download copy the map's pixels.
+        canvasContextAttributes: { preserveDrawingBuffer: true },
       });
       created.touchZoomRotate.disableRotation();
       created.scrollZoom.setWheelZoomRate(1 / 200);
       created.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-      created.addControl(new maplibregl.FullscreenControl(), "top-right");
-      created.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
+      created.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
       if (hazard) {
         const layer = hazard;
         created.on("load", () => {
           addLayers(created, layer, people, cells);
           applyVisibility(created, visibleRef.current);
+          applyPeopleOnly(created, peopleOnlyRef.current);
           applyScenario(created, scenarioRef.current, people);
         });
       }
@@ -179,12 +194,30 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
       mapRef.current = created;
     })();
 
+    // The container changes size between the start, run and report screens.
+    const resize = new ResizeObserver(() => mapRef.current?.resize());
+    if (container.current) resize.observe(container.current);
+
     return () => {
       cancelled = true;
+      resize.disconnect();
       mapRef.current = null;
       map?.remove();
     };
   }, []);
+
+  // Switching between the full-screen and report layouts: refit the area being planned.
+  useEffect(() => {
+    if (compact) setLegendOpen(false);
+    const timer = setTimeout(() => {
+      mapRef.current?.resize();
+      const town = exposureRef.current?.communities.find((c) => c.id === scenarioRef.current.scope);
+      goTo(town ? { center: [town.longitude, town.latitude], zoom: SCOPE_ZOOM } : {});
+    }, 50);
+    return () => clearTimeout(timer);
+    // goTo only reads refs and `info`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compact]);
 
   useEffect(() => {
     visibleRef.current = visible;
@@ -192,11 +225,23 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
   }, [visible]);
 
   useEffect(() => {
+    peopleOnlyRef.current = peopleOnly;
+    if (mapRef.current) applyPeopleOnly(mapRef.current, peopleOnly);
+  }, [peopleOnly]);
+
+  useEffect(() => {
+    const scopeChanged = scenario.scope !== scenarioRef.current.scope;
     scenarioRef.current = scenario;
     if (mapRef.current) applyScenario(mapRef.current, scenario, exposureRef.current);
+    if (scopeChanged) {
+      const town = exposureRef.current?.communities.find((c) => c.id === scenario.scope);
+      goTo(town ? { center: [town.longitude, town.latitude], zoom: SCOPE_ZOOM } : {});
+    }
+    // goTo only reads refs and `info`, which is set before any scope change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenario]);
 
-  function goTo(view: (typeof VIEWS)[number]) {
+  function goTo(view: { center?: [number, number]; zoom?: number }) {
     const map = mapRef.current;
     if (!map) return;
     if (view.center) {
@@ -208,7 +253,7 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
           [west, south],
           [east, north],
         ],
-        { padding: 24, duration: 1200 },
+        { padding: fitPadding(map.getContainer(), compactRef.current), duration: 1200 },
       );
     }
   }
@@ -216,26 +261,12 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
   const toggle = (group: LayerGroup) => setVisible((v) => ({ ...v, [group]: !v[group] }));
 
   return (
-    <div className="flex h-full flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-1.5 text-xs">
-        <span className="mr-1 text-slate-500">Go to</span>
-        {VIEWS.map((view) => (
-          <button
-            key={view.label}
-            type="button"
-            onClick={() => goTo(view)}
-            className="rounded-full bg-white px-2.5 py-1 font-medium text-slate-700 ring-1 ring-slate-200 transition hover:bg-slate-900 hover:text-white"
-          >
-            {view.label}
-          </button>
-        ))}
-      </div>
+    <div className="relative h-full w-full overflow-hidden bg-slate-100">
+      {/* Sized directly: maplibre-gl.css forces position: relative on the map container. */}
+      <div ref={container} className="h-full w-full" />
 
-      <div className="relative min-h-[480px] flex-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
-        {/* Sized directly: maplibre-gl.css forces position: relative on the map container. */}
-        <div ref={container} className="h-full w-full" />
-
-        <div className="absolute bottom-8 left-3 w-[17rem] rounded-lg bg-white/95 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200">
+      {!quiet && (
+        <div className="absolute right-3 bottom-8 w-[17rem] rounded-lg bg-white/95 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200">
           <button
             type="button"
             onClick={() => setLegendOpen((o) => !o)}
@@ -252,6 +283,25 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
                 title="Radar-observed flooding"
                 detail={`NISAR ${info ? info.method.toUpperCase() + " " : ""}· Sep 28 vs Oct 10`}
               >
+                <label className="flex cursor-pointer items-start gap-2 pb-1">
+                  <input
+                    type="checkbox"
+                    checked={peopleOnly}
+                    onChange={() => setPeopleOnly((on) => !on)}
+                    className="mt-0.5 accent-slate-900"
+                  />
+                  <span>
+                    <span className="block font-medium text-slate-900">
+                      Hide squares where nobody lives
+                    </span>
+                    {lived && (
+                      <span className="block text-slate-500">
+                        {lived.withPeople.toLocaleString()} of {lived.cells.toLocaleString()}{" "}
+                        flagged cells have an estimated 1 or more residents
+                      </span>
+                    )}
+                  </span>
+                </label>
                 <p className="text-slate-500">
                   Zoomed out, share of each block flagged (under {MIN_DRAWN_SHARE * 100}% left
                   blank):
@@ -294,19 +344,9 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
 
               {exposure && (
                 <>
-                  {exposure.people_outside_fema_zones != null && (
-                    <LayerToggle
-                      checked={visible.fema}
-                      onChange={() => toggle("fema")}
-                      title="FEMA flood zones"
-                      detail={`${Math.round(exposure.people_outside_fema_zones).toLocaleString()} of ${Math.round(exposure.people_in_flooded_cells).toLocaleString()} people in flagged cells live outside them`}
-                    >
-                      <Swatch color={FEMA_ZONE_TINT}>Special Flood Hazard Area</Swatch>
-                      <Swatch color="transparent" ring={OUTSIDE_ZONE_LINE}>
-                        People flagged outside the zones
-                      </Swatch>
-                    </LayerToggle>
-                  )}
+                  <div className="pl-0.5">
+                    <Swatch color={FEMA_ZONE_TINT}>FEMA flood zones (Special Flood Hazard Area)</Swatch>
+                  </div>
                   <LayerToggle
                     checked={visible.population}
                     onChange={() => toggle("population")}
@@ -325,9 +365,15 @@ export default function HazardMap({ scenario }: { scenario: Scenario }) {
             </div>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
+}
+
+/** Full screen on a wide display, the start card covers the left: keep the area clear of it. */
+function fitPadding(element: HTMLElement, compact: boolean) {
+  const left = !compact && element.clientWidth >= 1024 ? 420 : 24;
+  return { top: 24, bottom: 24, right: 24, left };
 }
 
 const OFFLINE_COLOR = "#94a3b8";
@@ -370,6 +416,21 @@ function applyVisibility(map: maplibregl.Map, visible: Record<LayerGroup, boolea
         map.setLayoutProperty(id, "visibility", visible[group as LayerGroup] ? "visible" : "none");
       }
     }
+  }
+}
+
+/** Show only flood squares with an estimated resident, or every flagged square. */
+function applyPeopleOnly(map: maplibregl.Map, peopleOnly: boolean) {
+  for (const level of BLOCK_LEVELS) {
+    if (!map.getLayer(level.id)) continue;
+    map.setFilter(level.id, [
+      "all",
+      [">=", ["get", "share"], MIN_DRAWN_SHARE],
+      [">=", ["get", "people"], peopleOnly ? SOMEONE_LIVES : 0],
+    ]);
+  }
+  if (map.getLayer("flood-cells")) {
+    map.setFilter("flood-cells", peopleOnly ? [">=", ["get", "p"], SOMEONE_LIVES] : null);
   }
 }
 
@@ -489,18 +550,6 @@ function addLayers(
         },
         namesAbove,
       );
-      map.addLayer(
-        {
-          id: `${level.id}-outside`,
-          type: "line",
-          source: level.id,
-          minzoom: level.minzoom,
-          maxzoom: level.maxzoom,
-          filter: ["all", [">=", ["get", "share"], MIN_DRAWN_SHARE], [">=", ["get", "outside"], 0.5]],
-          paint: { "line-color": OUTSIDE_ZONE_LINE, "line-width": 1.5 },
-        },
-        namesAbove,
-      );
       popups.push([level.id, (p) => blockPopup(p, metres)]);
     }
 
@@ -528,20 +577,6 @@ function addLayers(
         paint: {
           "line-color": PEOPLE_RING,
           "line-width": ["interpolate", ["linear"], ["zoom"], 14, 1.5, 16, 3],
-        },
-      },
-      namesAbove,
-    );
-    map.addLayer(
-      {
-        id: "flood-outside",
-        type: "line",
-        source: "flood-cells",
-        minzoom: CELLS_MINZOOM,
-        filter: ["all", ["==", ["get", "o"], 1], [">=", ["get", "p"], 0.5]],
-        paint: {
-          "line-color": OUTSIDE_ZONE_LINE,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 14, 1, 16, 2.5],
         },
       },
       namesAbove,
@@ -710,9 +745,9 @@ function square(grid: GridShape, row: number, col: number, size: number, scale =
 function floodCellSquares(cells: FloodCells, grid: GridShape): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
-    features: cells.cells.map(([lon, lat, k, c, p, o]) => {
+    features: cells.cells.map(([lon, lat, k, , p]) => {
       const [row, col] = cellIndex(grid, lon, lat);
-      return { type: "Feature", properties: { k, c, p, o }, geometry: square(grid, row, col, 1) };
+      return { type: "Feature", properties: { k, p }, geometry: square(grid, row, col, 1) };
     }),
   };
 }
@@ -720,19 +755,18 @@ function floodCellSquares(cells: FloodCells, grid: GridShape): GeoJSON.FeatureCo
 function floodBlocks(cells: FloodCells, grid: GridShape, factor: number): GeoJSON.FeatureCollection {
   const blocks = new Map<
     string,
-    { row: number; col: number; open: number; canopy: number; other: number; people: number; outside: number }
+    { row: number; col: number; open: number; canopy: number; other: number; people: number }
   >();
-  for (const [lon, lat, k, , p, o] of cells.cells) {
+  for (const [lon, lat, k, , p] of cells.cells) {
     const [cellRow, cellCol] = cellIndex(grid, lon, lat);
     const row = Math.floor(cellRow / factor) * factor;
     const col = Math.floor(cellCol / factor) * factor;
     const key = `${row}/${col}`;
-    const block = blocks.get(key) ?? { row, col, open: 0, canopy: 0, other: 0, people: 0, outside: 0 };
+    const block = blocks.get(key) ?? { row, col, open: 0, canopy: 0, other: 0, people: 0 };
     if (k === 1) block.open += 1;
     else if (k === 2) block.canopy += 1;
     else block.other += 1;
     block.people += p;
-    if (o === 1) block.outside += p;
     blocks.set(key, block);
   }
   return {
@@ -743,7 +777,7 @@ function floodBlocks(cells: FloodCells, grid: GridShape, factor: number): GeoJSO
       const share = flagged / size;
       return {
         type: "Feature",
-        properties: { share, flagged, open: b.open, canopy: b.canopy, people: b.people, outside: b.outside },
+        properties: { share, flagged, open: b.open, canopy: b.canopy, people: b.people },
         geometry: square(grid, b.row, b.col, factor, blockSide(share)),
       };
     }),
@@ -769,17 +803,13 @@ function blockPopup(p: Record<string, unknown>, metres: number): string {
   return `<strong>${Math.max(1, Math.round(Number(p.share) * 100))}% of this ${metres.toLocaleString()} m square flagged as flooded</strong><br/>
     ${Number(p.flagged).toLocaleString()} cells${kinds.length ? `: ${kinds.join(", ")}` : ""}<br/>
     ${people > 0 ? `${people.toLocaleString()} ${people === 1 ? "person lives" : "people live"} in them` : "Nobody lives in them"}<br/>
-    ${Number(p.outside) >= 0.5 ? `${Math.round(Number(p.outside)).toLocaleString()} of them outside FEMA flood zones<br/>` : ""}
     <span style="color:#64748b">Zoom in to see each cell</span>`;
 }
 
 function cellPopup(p: Record<string, unknown>, metres: number): string {
   const people = Math.round(Number(p.p));
   return `<strong>${KIND_LABELS[Number(p.k)] ?? KIND_LABELS[0]}</strong><br/>
-    Confidence ${Math.round(Number(p.c) * 100)}%<br/>
-    ${people > 0 ? `About ${people} ${people === 1 ? "person lives" : "people live"} in this ${metres} m cell` : "Nobody lives in this cell"}${
-      Number(p.o) === 1 ? "<br/>Outside FEMA flood zones: likely no flood insurance" : ""
-    }`;
+    ${people > 0 ? `About ${people} ${people === 1 ? "person lives" : "people live"} in this ${metres} m cell` : "Nobody lives in this cell"}`;
 }
 
 function points(

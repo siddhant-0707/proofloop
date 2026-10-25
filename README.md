@@ -1,8 +1,8 @@
-# ProofLoop
+# Cascade
 
-> Most AI tells you what to do. ProofLoop attacks its own plan until it survives.
+> Most AI tells you what to do. Cascade attacks its own plan until it survives.
 
-ProofLoop helps a small county emergency manager build a hurricane response plan that has been stress-tested before anyone acts on it.
+Cascade (formerly ProofLoop) helps a small county emergency manager build a hurricane response plan that has been stress-tested before anyone acts on it.
 A Planner agent proposes a plan, an Adversary agent attacks it with realistic worst cases, and a deterministic simulation scores every plan against what actually flooded.
 The flood truth comes from NASA-ISRO NISAR L-band radar, whose calibrated data became public in July 2026.
 Our hero scenario is Hurricane Isaias (landfall Oct 9, 2026) in Florida's Big Bend, imaged by NISAR on Sep 28 (before) and Oct 10 (after).
@@ -13,7 +13,7 @@ Built at Gator Hack V (Oct 23-25, 2026).
 
 ```
 backend/   Python (uv): NISAR ingest, flood layers, simulation, verifier, agents, FastAPI
-web/       Next.js + MapLibre: map, agent rounds, scenario sliders, evidence trail
+web/       Next.js + MapLibre: map, run progress, plan report, evidence trail
 docs/      Decisions and plan
 data/      Downloaded and processed data (git-ignored)
 ```
@@ -60,7 +60,7 @@ cd web && npx tsc --noEmit && npm run lint
 | Route | What it does |
 |---|---|
 | `GET /api/hazard`, `/api/hazard.png` | Hazard layer metadata and map image |
-| `GET /api/exposure`, `/api/population.png` | Population, shelters, communities, people outside FEMA zones, and the population image |
+| `GET /api/exposure`, `/api/population.png` | Population, shelters, communities, and the population image |
 | `GET /api/fema-zones.png` | FEMA Special Flood Hazard Area as a map image |
 | `POST /api/loop/stream?agents=gemma\|rules&rounds=1-3` | Run the Loop on the Big Bend World for the Scenario in the body, streaming one JSON event per line (`started`, each `round`, then `transcript` or `error`); the web app uses `rounds=1` to re-plan |
 | `POST /api/loop/gemma` | Run the Loop on the Big Bend World with Gemma 4 as Planner and Adversary |

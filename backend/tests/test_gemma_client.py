@@ -168,7 +168,6 @@ def test_sends_a_union_as_plain_variants_without_references():
         "shelter_offline",
         "road_closed",
         "budget_cut",
-        "unwarned_outside_zone",
     }
     assert variants["shelter_offline"]["properties"]["shelter_id"] == {
         "type": "string",

@@ -10,7 +10,7 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **Study area:** NISAR track 148 ascending, frames 16 (Dixie County and coastal Taylor County) and 17 (Perry).
 - **Epochs:** before 2026-09-28, after 2026-10-10 (about one day after landfall).
 - **User:** a Taylor or Dixie County emergency manager.
-- **Loop:** Planner and Adversary agents on Gemma 4, 3 rounds plus a final attack, structured JSON output only.
+- **Loop:** Planner and Adversary agents on Gemma 4, 3 rounds, each plan tested by the Adversary, structured JSON output only.
 - **Model hosting:** Gemma 4 26B A4B on OpenRouter (`google/gemma-4-26b-a4b-it`, about $0.07 per 1M input and $0.23 per 1M output tokens; under $1 for the whole event), with the Gemini API (`gemma-4-26b-a4b-it`, free) as the fallback.
   On the Gemini API, Gemma 4 with a JSON schema looped on the Planner prompt (repeated words, 500 errors, RECITATION stops), so it is only the backup.
   Both providers receive a strict JSON schema with shelter ids restricted to valid ones, and every response is validated against the Plan or Attack schema.
@@ -41,11 +41,7 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
 - **Reachability is computed by the Simulation, not stored in the World.**
   A flooded cell reaches a shelter through a 4-connected path of dry cells no longer than the World's travel reach.
   Computing it per Scenario lets future attacks (closed roads) change it without rebuilding the World.
-- **Attacks accumulate, and the Adversary gets a final attack.**
-  Each round's attack is answered by the next round's plan.
-  After the last round the Adversary attacks once more, and no plan answers that final attack.
-  The recommendation is the verified plan that shelters the most people under the final Scenario, with every attack applied, so it has survived an attack it never saw.
-  Ties go to the earlier round.
+- **Attacks are tests; they do not accumulate** (superseded the earlier "attacks accumulate, plus a final attack" design on 2026-10-24; see "Plans are for normal conditions" below).
 - **Agent output is validated before it is used.**
   Malformed plans or attacks, attacks on unknown shelters, and agent exceptions are recorded in the Transcript with a reason and never crash a run.
 - **SME2 hazard evidence** is the stronger of |HH change| / 6 dB and soil moisture increase / 0.2 m³/m³, clipped to [0, 1].
@@ -100,14 +96,14 @@ Agreed on 2026-10-24.
 
 ## Flooded outside the flood zone (#8)
 
-Agreed on 2026-10-24.
+Agreed on 2026-10-24. Superseded the same day by "Everyone counts the same; backup plans": the zones stay on the map as context only, and the unwarned attack and outreach are gone.
 
 - **FEMA flood zones:** Special Flood Hazard Area polygons (SFHA_TF = 'T': zones A, AE, AH, VE) from FEMA's National Flood Hazard Layer web service, downloaded once on the first `world.build` and cached in `data/raw/fema`.
   A cell is inside a FEMA zone when its center lies in one of those polygons; zone X and unmapped land are outside.
   8,261 polygons cover 44.6% of the World's cells.
 - **Finding:** 659 of the 960 people in radar-flagged cells live outside FEMA flood zones: Perry 253, Cross City 115, Steinhatchee 17.
   Those inland flags are mostly radar brightening under tree canopy, so the claim is radar-observed water change outside FEMA zones, not confirmed flooding.
-- **Attack, unwarned outside the flood zone:** from the next round on, affected people outside FEMA zones believe they are safe and stay home; they still count as affected.
+- **Attack, unwarned outside the flood zone:** affected people outside FEMA zones believe they are safe and stay home; they still count as affected.
 - **Counter, target outreach (community):** $5,000 per community (an assumption: door-to-door teams, reverse 911 calls, radio).
   Once people are unwarned, outreach makes a community's people outside the zones seek shelter like everyone else.
   Before the attack it changes nothing, so the Planner has to anticipate it.
@@ -131,3 +127,109 @@ Agreed on 2026-10-24.
 - **Stale runs:** the browser aborts and ignores them; the server stops the Loop at the next round once the client disconnects.
 - **Measured (Gemma 4 via OpenRouter, 6 re-plans from one previous plan):** 2 verified; typical time 8 to 30 s, with one 68 s outlier.
   Rule-based re-plans are instant and verified, so use them for the live slider moment in the demo.
+
+## Evidence trail and outreach briefing (#10)
+
+Agreed on 2026-10-24.
+
+- **Evidence trail:** every Round and the Recommendation carry evidence for each figure (people affected, sheltered and unreached, robustness, cost, unfunded actions, affected and unreached people outside FEMA zones, budget).
+  Each entry lists its sources from the source pack, the formula code applies, this run's inputs (for example cost itemized per action), assumptions and limitations.
+  Code builds it from the same simulation trace that scored the plan, so the trail cannot disagree with the number; agent prompts do not see it.
+- **Source pack:** moved from `gemma/` to `proofloop/sources.py` so the Loop can cite it; S1 now names frames 16 and 17, and S6 is the 2020 Census block populations.
+- **Limitation on every flood figure:** the flood layer is radar-observed water change with a confidence per cell, not an official flood map.
+- **Evidence drawer:** every number in the panel (round scores, budgets, the recommendation and the briefing) opens a side drawer with that figure's evidence; Escape or the backdrop closes it.
+- **Outreach briefing:** written by code templates, not Gemma, from the recommended plan under the conditions the user set.
+  Neighborhoods are the six communities (4 km radius), most affected first, plus one line for people outside any town.
+  Each lists people affected, sheltered and outside FEMA zones, the shelters they go to (and how many transport carries), and plain-language steps: where to send residents, transport, closed roads, who outside FEMA zones to warn or reach with outreach, and who cannot reach a shelter.
+  A Copy button gives the briefing as plain text for field staff.
+
+## Scope, and the stress test picks the failures
+
+Agreed on 2026-10-24; replaces the shelter, road and unwarned controls from #9.
+
+- **User controls:** only what the plan is for (the whole area or one of the six towns) and the budget.
+  A single-town plan counts only that town's affected people (4 km radius); any shelter may take them, and the agents are offered only that town for transport, outreach and road attacks.
+  Changing the town clears the results and waits for a full stress test; budget changes still re-plan.
+- **Failures are found, not chosen:** the Adversary tests each round's plan, and once the recommendation is chosen, code scores it under every case on top of the user's scenario.
+  Cases are each shelter the plan opens going offline, each affected town's road closing, budget cuts of 10, 25 and 50%, and people outside FEMA zones unwarned, alone and in pairs (never two cuts).
+  The whole area is 75 cases and adds about 1 s; a town is about 20.
+- **Agent calls are stateless:** every Planner and Adversary call is a fresh API request.
+  The Adversary sees only the current conditions and the plan it attacks, never the Planner's reasoning or earlier conversations.
+  The Planner sees a summary of earlier rounds on purpose, so it can learn from the Verifier.
+- **Confidence:** the per-cell radar evidence stays in the data and the evidence trail but is no longer shown on the map.
+- **Hide unpopulated squares:** a map option under the flooding layer hides flagged cells, and zoomed-out blocks, with an estimated resident count under 0.5 (which rounds to 0); it is off by default and only changes the map, not the simulation.
+
+## Plan report and review
+
+Agreed on 2026-10-24.
+
+- **Report:** code writes every plan up under the FEMA CPG 101 base-plan headings that Florida county plans also use (research in `docs/research/plan-report-format.md`): purpose and scope, situation overview, planning assumptions, objectives (ICS 202 style), concept of operations, organization and assignment of responsibilities (one row per action, ICS 204 style, labeled by function such as Mass care ESF 6), communications: public alert and warning (the per-neighborhood briefing), administration, finance and logistics, limitations and references.
+  The final plan's report adds courses of action considered (every verified plan and why this one) and plan validation (one failure, two at once, and everything the Adversary found at once).
+  Every report is marked as an exercise, not an official county document; sections ProofLoop has no data for (direction and control, signatures, continuity, recovery) are left out rather than filled with placeholders.
+- **Main page:** only the final, verified plan, as a full-width report below the map; the side panel keeps the controls, live progress and a short summary.
+  Every other plan sits in a Review tab, written up the same way for the same conditions: verified but not chosen (with its score against the final plan's), rejected (with the Verifier's reasons), or a re-test.
+- **Re-tests are marked:** when the Planner's output is invalid, the round re-tests the best earlier plan and says so, instead of looking like a new verified plan; it is not a separate candidate.
+- **The choice is shown:** the recommendation lists every verified plan with its score, the number it is chosen by, so "final" can no longer look like it sits on the wrong plan.
+- **No re-plan on finish:** the panel re-plans only when the budget changes, not when a run finishes.
+
+## Plans are for normal conditions; failures are tests
+
+Agreed on 2026-10-24; replaces "attacks accumulate, plus a final attack".
+
+- **Why:** with attacks piling up, by the last round several shelters were offline and the budget cut, so every plan was checked against a disaster and runs could end with no plan at all.
+- **Every plan is for the user's conditions:** each round the Planner plans for the scope and budget the user set, and the Verifier checks it there.
+  A plan is rejected only for its own mistakes: false claims, over budget, or unknown or offline places.
+- **The Adversary tests, it does not change the world:** each round it picks the one failure that hurts that round's plan most; the Round records the failure and the plan's result under it.
+  Failures never carry into the next round; the Planner sees them in its history and may hedge if the budget allows.
+- **The final plan:** among verified plans, the best score, where the score is half the share sheltered as planned and half the average share over every single failure (each opened shelter offline, each affected town's road closed, each budget cut, people outside FEMA zones unwarned).
+  Then the cheaper plan, then the earlier one.
+- **There is always a final plan:** when no plan passes verification, code builds a baseline plan (the affordable set of shelters that best survives losing one, plus outreach or transport against the failures the Adversary found when that helps and fits the budget), labeled "Built by code".
+  The rule-based Planner proposes the same baseline.
+- **Major trouble is reported, never held against a plan:** the report's stress test separates one failure (small trouble) from two at once (major trouble), and shows every failure the Adversary found applied at once.
+
+## Everyone counts the same; backup plans
+
+Agreed on 2026-10-24; replaces the score and the FEMA-zone parts above.
+
+- **No FEMA-zone logic:** every affected person counts the same, inside a FEMA flood zone or not.
+  The unwarned attack, target outreach, people staying home and the outside-zone figures are removed from the Simulation, the evidence trail, the briefing, the report and the agents.
+- **Map:** FEMA flood zones are always tinted on the map with a legend swatch, and have no checkbox; the pink outside-zone outlines and popup lines are gone.
+- **Shelter everyone first:** the final plan is the plan that shelters the most people as planned; among those, the most on average under single failures; then the cheaper plan, then the earlier one.
+  The baseline picks the affordable set of shelters that shelters the most people, and among those the one that best survives losing a shelter; the Gemma Planner is told to shelter everyone first and hedge only with money left.
+  The baseline always competes with the verified plans (the Planner's plan wins ties), so the final plan never shelters fewer people than the budget allows.
+  Before 2026-10-25 it competed only when no plan passed; a verified Gemma plan sheltering 453 of 960 at $150,000 became final although $116,850 covers everyone.
+- **When the budget cannot shelter everyone:** the report says so up front, with the cost of the cheapest set of shelters that takes everyone (or says no set can).
+  When money is the only reason, the run screen asks: it says how many the current budget shelters and offers the lowest budget that covers everyone (the cheapest set of shelters that takes everyone), with "Yes" (sets the budget and re-plans) or "No" (keeps the budget and opens the report).
+  It never asks when the current budget already covers everyone, or when no set of shelters can.
+- **Backup plans:** for every single failure, the 5 worst pairs and everything the Adversary found at once, code builds a backup plan for those conditions (the baseline, given the failure) and keeps it if it shelters more than the plan does.
+  The report shows each as what changes from the plan, for example "Open Taylor County Elementary School instead of Taylor County High School", with the people it shelters.
+- **Measured (whole area, $150,000, rule-based):** the plan shelters all 960 as planned.
+  With backups, every shelter outage and road closure still shelters everyone; budget cuts of 25% and 50% leave 53% and 47%, because $112,500 or less cannot open enough shelters at $25 per space.
+  A run takes about 5 s.
+
+## Three screens over one map
+
+Agreed on 2026-10-25; replaces the side panel, the budget slider and the report below the map.
+
+- **Start:** the map fills the page; a card holds "Plan for" (a dropdown: the whole area or one of the six towns), the budget as a typed number (at least $1,000), the Planner (Gemma 4 or rule-based) and Run.
+  Choosing a town flies the map to it.
+- **Running:** the map stays as a dimmed background behind one progress card: percent done, time elapsed, and three stages (Plan, Attack, Report) instead of round numbers.
+  The percent counts finished rounds plus an estimate of the current one that slows as it goes, so it keeps moving but only reaches 100% when the run ends; Cancel returns to the start.
+- **Budget question:** asked on the run screen, only when money alone keeps the plan from sheltering everyone; "Yes" re-plans with the new budget, "No" opens the report.
+- **Report:** its own page, with the map beside it (40% of the width on a wide screen, above it on a narrow one) refitted to the area planned; "New plan" returns to the start with the same choices, and the start card can reopen the last report.
+- **No live re-plan on budget edits:** the budget is a typed number, so a new run starts only from Run (or "Yes" on the budget question).
+
+## Cascade: a plain report and PDF downloads
+
+Agreed on 2026-10-25; the product is renamed Cascade (the code and repo keep the `proofloop` name).
+
+- **Start card:** Cascade's mark and name, the storm and area as chips, "Area" (a dropdown), the budget typed with thousands separators plus $100k, $150k and $250k presets, the planning engine (AI planner or Instant, rule-based) folded under "Planning engine", and "Build plan".
+  The map zooms out to level 5.5 and pans 2.5 degrees past the World's bounds.
+- **Run card:** "Building your plan" (or "Updating your plan"), with the stages Draft, Strengthen and Finish; it never says "stress test".
+- **The report is only the plan:** no badges, rationale, Planner, Adversary, Verifier, rounds, models or "built by code", and no "courses of action considered" section.
+- **Other plans:** a second tab lists every other plan drafted for the same conditions (re-tests and rounds with no plan left out, plus the plan before a budget change), each as "Alternative N" with "Rejected" or "Not chosen", a one-line summary and a plain reason, for example "Rejected: it misstated how many it shelters (said 1,199, really 960)" or "Shelters 453 of 960 (47%); the chosen plan shelters 100%".
+  Each expands to its full write-up and has its own PDF button.
+  The backup plans section is "Contingencies and backup plans"; the exercise disclaimer moved from a banner to the references note.
+  The loop still records every round in the transcript; only the web app stops showing it.
+- **Download PDF:** a menu in the report header offers the full plan report (with a snapshot of the map), the field briefing (assignments and town steps), the backup plans, or the other plans (one per page).
+  It prints a letterhead version of the report through the browser's print dialog, with the file name set from the page title ("Cascade - Full plan report - Whole area - $150,000"); in the print view every stress case is listed instead of the worst five.

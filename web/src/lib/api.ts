@@ -2,16 +2,16 @@
 
 export type Scenario = {
   budget: number;
+  /** A community id for a single-town plan; null plans for the whole area. */
+  scope: string | null;
   offline_shelters: string[];
   closed_communities: string[];
-  unwarned_outside_zones: boolean;
 };
 
 export type Action =
   | { type: "open_shelter"; shelter_id: string }
   | { type: "stage_transport"; community_id: string; seats: number }
-  | { type: "allocate_budget"; category: "contingency_reserve"; amount: number }
-  | { type: "target_outreach"; community_id: string };
+  | { type: "allocate_budget"; category: "contingency_reserve"; amount: number };
 
 export type Plan = {
   actions: Action[];
@@ -26,7 +26,6 @@ export type SimulationResult = {
   cost: number;
   robustness: number;
   unfunded_actions: number;
-  people_unreached_outside_zones: number;
 };
 
 export type Check = {
@@ -52,26 +51,133 @@ export type Round = {
   planner_call: AgentCall | null;
   verdict: { passed: boolean; checks: Check[] } | null;
   result: SimulationResult | null;
+  /** The Adversary's test of this plan: one failure; it never carries into later rounds. */
   attack: Attack | null;
+  /** The plan's result with `attack` applied. */
+  attacked: SimulationResult | null;
   adversary_error: string | null;
   adversary_call: AgentCall | null;
+  /** Set when the Planner's output was invalid and this round re-tests an earlier plan. */
+  plan_from_round: number | null;
+  /** The plan written up under the conditions the user set. */
+  report: PlanReport | null;
 };
+
+export type Assignment = {
+  kind: "shelter" | "transport" | "reserve";
+  title: string;
+  resource: string;
+  work: string;
+  people: number | null;
+  cost: number;
+  funded: boolean;
+};
+
+export type ReportSection = { title: string; lines: string[] };
+
+/** A plan written up as an operations plan, by the backend, under one set of conditions. */
+export type PlanReport = {
+  title: string;
+  scenario: Scenario;
+  result: SimulationResult;
+  sections: ReportSection[];
+  assignments: Assignment[];
+  briefing: Briefing;
+  evidence: EvidenceTrail;
+  limitations: string[];
+  references: SourceRef[];
+};
+
+/** A verified plan; the final plan shelters the most as planned, then the most on `typical`. */
+export type Candidate = {
+  /** Null for the plan code builds, which every run includes. */
+  round_index: number | null;
+  /** As planned. */
+  result: SimulationResult;
+  /** Average share sheltered over every single failure. */
+  typical: number;
+};
+
+export type SourceRef = { id: string; title: string; origin: string };
+
+/** Where one figure comes from; built by the backend from the same run that scored it. */
+export type Evidence = {
+  sources: SourceRef[];
+  formula: string;
+  inputs: string[];
+  assumptions: string[];
+  limitations: string[];
+};
+
+export type Figure = keyof SimulationResult | "budget";
+
+export type EvidenceTrail = Partial<Record<Figure, Evidence>>;
+
+export type ShelterAssignment = {
+  shelter_id: string;
+  name: string;
+  people: number;
+  carried: number;
+};
+
+export type NeighborhoodBriefing = {
+  community_id: string | null; // null: people flooded outside every town
+  name: string;
+  people_affected: number;
+  people_sheltered: number;
+  people_unreached: number;
+  shelters: ShelterAssignment[];
+  transport_seats: number;
+  road_closed: boolean;
+  steps: string[];
+};
+
+export type Briefing = {
+  conditions: string[];
+  neighborhoods: NeighborhoodBriefing[];
+  limitations: string[];
+};
+
+export type Recommendation = {
+  /** Null when the plan code builds is final: it shelters more than every verified plan. */
+  round_index: number | null;
+  plan: Plan;
+  /** As planned, under the base scenario. */
+  result: SimulationResult;
+  /** When the plan leaves people unsheltered: the cost of the cheapest set of shelters that
+   * takes everyone, or null when no set can. */
+  full_cover_cost: number | null;
+  /** Written up under the base scenario: the conditions the plan is for. */
+  report: PlanReport | null;
+  stress: StressTest | null;
+  /** Every failure the Adversary found, all at once. */
+  combined: StressCase | null;
+  candidates: Candidate[];
+};
+
+/** What to do instead when a failure hits: a plan built by code for those conditions. */
+export type Backup = { actions: Action[]; result: SimulationResult };
+
+export type StressCase = {
+  attacks: Attack[];
+  result: SimulationResult;
+  /** Set when a backup plan shelters more people under these failures than the plan does. */
+  backup: Backup | null;
+};
+
+/** The recommended plan under every single attack and every pair, worst first. */
+export type StressTest = { cases: StressCase[] };
 
 export type Attack = { rationale: string } & (
   | { type: "shelter_offline"; shelter_id: string }
   | { type: "road_closed"; community_id: string }
   | { type: "budget_cut"; percent: number }
-  | { type: "unwarned_outside_zone" }
 );
 
 export type Transcript = {
   base_scenario: Scenario;
   rounds: Round[];
-  final_attack: Attack | null;
-  final_adversary_error: string | null;
-  final_adversary_call: AgentCall | null;
-  final_scenario: Scenario;
-  recommendation: { round_index: number; plan: Plan; result: SimulationResult } | null;
+  recommendation: Recommendation | null;
 };
 
 export type HazardLayerInfo = {
@@ -98,7 +204,6 @@ export type ShelterInfo = {
 export type ExposureInfo = {
   total_population: number;
   people_in_flooded_cells: number;
-  people_outside_fema_zones: number | null;
   fema_zones_image_url: string;
   population_image_url: string;
   shelters: ShelterInfo[];
@@ -115,7 +220,6 @@ export type FloodCells = {
     kind: number,
     confidence: number,
     people: number,
-    outsideFemaZones: number,
   ][];
 };
 
@@ -151,9 +255,9 @@ export type LoopEvent =
 /** The base Scenario the user starts from. Keep in sync with BIG_BEND_SCENARIO in api/app.py. */
 export const DEFAULT_SCENARIO: Scenario = {
   budget: 150_000,
+  scope: null,
   offline_shelters: [],
   closed_communities: [],
-  unwarned_outside_zones: false,
 };
 
 export type RunOptions = {

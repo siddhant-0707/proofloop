@@ -18,7 +18,6 @@ def save_world(world: World, path: Path) -> None:
         "shelters": [asdict(s) for s in world.shelters],
         "communities": [asdict(c) for c in world.communities],
         "transport_cost_per_seat": world.transport_cost_per_seat,
-        "outreach_cost": world.outreach_cost,
     }
     arrays: dict[str, Any] = {
         "latitude": world.grid.latitude,
@@ -54,5 +53,4 @@ def load_world(path: Path) -> World:
                 "transport_cost_per_seat", World.transport_cost_per_seat
             ),
             in_fema_zone=data["in_fema_zone"] if "in_fema_zone" in data else None,
-            outreach_cost=meta.get("outreach_cost", World.outreach_cost),
         )

@@ -12,21 +12,25 @@ from proofloop.loop.agents import (
     ScriptedAdversary,
     ScriptedPlanner,
 )
+from proofloop.loop.baseline import baseline_plan, full_cover_cost, with_backup
+from proofloop.loop.report import write_report
 from proofloop.loop.schemas import (
     ATTACK,
     AgentCall,
     Attack,
-    BudgetCut,
+    Candidate,
     Plan,
     Recommendation,
     RoadClosed,
     Round,
     Scenario,
     ShelterOffline,
+    StressCase,
+    StressTest,
     Transcript,
-    UnwarnedOutsideZone,
 )
 from proofloop.loop.simulation import simulate
+from proofloop.loop.stress import apply_all, apply_attack, stress_test, typical, unique_attacks
 from proofloop.loop.verifier import verify
 from proofloop.world import World
 
@@ -47,6 +51,9 @@ __all__ = [
 ]
 
 DEFAULT_ROUNDS = 3
+_MIN_PEOPLE = 0.5
+# Backup plans are built for every single failure and this many of the worst pairs.
+_PAIRS_WITH_BACKUP = 5
 
 
 def run_proofloop(
@@ -58,34 +65,36 @@ def run_proofloop(
     on_round: Callable[[Round], None] | None = None,
     final_attack: bool = True,
 ) -> Transcript:
-    """Run `rounds` rounds of plan, verify, score and attack, then one final attack.
+    """Run `rounds` rounds: the Planner plans, code verifies and scores the plan, and the
+    Adversary tests it with one failure.
+
+    Every plan is made, verified and scored for `scenario`, the conditions the user set.
+    The Adversary's failures never pile up: each tests one plan, and later rounds see
+    them so the Planner can hedge. A plan is rejected only for its own mistakes (false
+    claims, over budget, unknown or offline places), never because a failure hurts it.
 
     `on_round` is called with each Round as soon as it completes, for streaming.
-    With `final_attack=False` (a quick re-plan) the Adversary skips the last round, and
-    the recommendation is scored under the conditions the last plan answered.
+    With `final_attack=False` (a quick re-plan) the Adversary skips the last round's plan.
     """
     history: list[Round] = []
-    current = scenario
-    last_attack: Attack | None = None
-    final_adversary_error: str | None = None
-    final_adversary_call: AgentCall | None = None
     for index in range(rounds):
         last = index == rounds - 1
         plan, planner_error, planner_call = _ask(
-            Plan.model_validate, planner.propose, world, current, history
+            Plan.model_validate, planner.propose, world, scenario, history
         )
-        if plan is None:
-            best = _recommend(world, current, history)
-            plan = best.plan if best else None
+        plan_from_round = None
+        best = _best(_candidates(world, scenario, history)) if plan is None else None
+        if best is not None and best.round_index is not None:
+            plan, plan_from_round = history[best.round_index].plan, best.round_index
 
-        verdict = verify(world, current, plan) if plan else None
-        result = simulate(world, current, plan) if plan else None
+        verdict = verify(world, scenario, plan) if plan else None
+        result = simulate(world, scenario, plan) if plan else None
         attack, adversary_error, adversary_call = (
             _ask(
-                partial(_validate_attack, world, current),
+                partial(_validate_attack, world, scenario),
                 adversary.attack,
                 world,
-                current,
+                scenario,
                 plan,
                 result,
             )
@@ -95,33 +104,31 @@ def run_proofloop(
         history.append(
             Round(
                 index=index,
-                scenario=current,
+                scenario=scenario,
                 plan=plan,
                 planner_error=planner_error,
                 planner_call=planner_call,
+                plan_from_round=plan_from_round,
                 verdict=verdict,
                 result=result,
-                attack=None if last else attack,
-                adversary_error=None if last else adversary_error,
-                adversary_call=None if last else adversary_call,
+                attack=attack,
+                attacked=(
+                    simulate(world, apply_attack(scenario, attack), plan)
+                    if plan and attack
+                    else None
+                ),
+                adversary_error=adversary_error,
+                adversary_call=adversary_call,
+                report=write_report(world, scenario, plan, scenario) if plan else None,
             )
         )
         if on_round:
             on_round(history[-1])
-        if last:
-            last_attack, final_adversary_error = attack, adversary_error
-            final_adversary_call = adversary_call
-        if attack is not None:
-            current = _apply(current, attack)
 
     return Transcript(
         base_scenario=scenario,
         rounds=history,
-        final_attack=last_attack,
-        final_adversary_error=final_adversary_error,
-        final_adversary_call=final_adversary_call,
-        final_scenario=current,
-        recommendation=_recommend(world, current, history),
+        recommendation=_recommend(world, scenario, history),
     )
 
 
@@ -160,32 +167,91 @@ def _validate_attack(world: World, scenario: Scenario, raw: Any) -> Attack:
             raise ValueError(f"unknown community {attack.community_id}")
         if attack.community_id in scenario.closed_communities:
             raise ValueError(f"the road into {attack.community_id} is already closed")
-    if isinstance(attack, UnwarnedOutsideZone) and scenario.unwarned_outside_zones:
-        raise ValueError("people outside FEMA zones are already unwarned")
+        if scenario.scope is not None and attack.community_id != scenario.scope:
+            raise ValueError(f"{attack.community_id} is outside the plan's scope")
     return attack
 
 
-def _apply(scenario: Scenario, attack: Attack) -> Scenario:
-    if isinstance(attack, ShelterOffline):
-        return scenario.with_offline(attack.shelter_id)
-    if isinstance(attack, RoadClosed):
-        return scenario.with_closed(attack.community_id)
-    if isinstance(attack, BudgetCut):
-        return scenario.with_budget_cut(attack.percent)
-    assert isinstance(attack, UnwarnedOutsideZone)
-    return scenario.with_unwarned()
+def _recommend(world: World, base: Scenario, rounds: list[Round]) -> Recommendation:
+    """The best of the verified plans and the code-built baseline, with its report, its
+    every-case stress test with backup plans, every failure the Adversary found at once,
+    and every candidate it was chosen from.
+
+    The baseline always competes, so the final plan never shelters fewer people than
+    the best affordable set of shelters; on a tie the Planner's plan is kept."""
+    found = unique_attacks([r.attack for r in rounds if r.attack])
+    baseline = baseline_plan(world, base, found)
+    candidates = [
+        *_candidates(world, base, rounds),
+        Candidate(
+            round_index=None,
+            result=simulate(world, base, baseline),
+            typical=typical(world, base, baseline),
+        ),
+    ]
+    best = _best(candidates)
+    assert best is not None
+    round_index = best.round_index
+    plan = baseline if round_index is None else rounds[round_index].plan
+    assert plan is not None
+    result = simulate(world, base, plan)
+    combined = (
+        StressCase(attacks=found, result=simulate(world, apply_all(base, found), plan))
+        if found
+        else None
+    )
+    return Recommendation(
+        round_index=round_index,
+        plan=plan,
+        result=result,
+        full_cover_cost=(
+            full_cover_cost(world, base) if result.people_unreached >= _MIN_PEOPLE else None
+        ),
+        report=write_report(world, base, plan, base),
+        stress=_with_backups(world, base, stress_test(world, base, plan)),
+        combined=with_backup(world, base, combined) if combined else None,
+        candidates=candidates,
+    )
 
 
-def _recommend(world: World, final: Scenario, rounds: list[Round]) -> Recommendation | None:
-    """The verified plan that shelters the most people once every attack has landed.
+def _with_backups(world: World, base: Scenario, stress: StressTest) -> StressTest:
+    pairs = 0
+    cases = []
+    for case in stress.cases:  # worst first
+        if len(case.attacks) == 1 or pairs < _PAIRS_WITH_BACKUP:
+            pairs += len(case.attacks) > 1
+            case = with_backup(world, base, case)
+        cases.append(case)
+    return StressTest(cases=cases)
 
-    Ties go to the earlier round, so a revision must strictly improve to replace it.
-    """
-    best: Recommendation | None = None
-    for round_ in rounds:
-        if round_.plan is None or round_.verdict is None or not round_.verdict.passed:
-            continue
-        result = simulate(world, final, round_.plan)
-        if best is None or result.robustness > best.result.robustness:
-            best = Recommendation(round_index=round_.index, plan=round_.plan, result=result)
+
+def _candidates(world: World, base: Scenario, rounds: list[Round]) -> list[Candidate]:
+    """Each verified plan with its figures. A round re-testing an earlier plan adds nothing."""
+    return [
+        Candidate(round_index=r.index, result=r.result, typical=typical(world, base, r.plan))
+        for r in rounds
+        if r.plan is not None
+        and r.plan_from_round is None
+        and r.result is not None
+        and r.verdict is not None
+        and r.verdict.passed
+    ]
+
+
+def _best(candidates: list[Candidate]) -> Candidate | None:
+    """The candidate that shelters the most people as planned; among those, the one that
+    shelters the most on average under single failures; then the cheaper one; then the
+    earlier one, so a later candidate (the baseline comes last) must strictly improve."""
+    best: Candidate | None = None
+    for candidate in candidates:
+        if best is None or _rank(candidate) > _rank(best):
+            best = candidate
     return best
+
+
+def _rank(candidate: Candidate) -> tuple[float, float, float]:
+    return (
+        round(candidate.result.robustness, 9),
+        round(candidate.typical, 9),
+        -candidate.result.cost,
+    )

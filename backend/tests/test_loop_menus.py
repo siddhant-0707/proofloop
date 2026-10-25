@@ -56,8 +56,8 @@ def test_transport_only_fills_beds_left_in_open_shelters():
     assert transcript.rounds[0].result.people_sheltered == 15  # 30 seats, 15 beds
 
 
-def test_a_closed_road_stops_a_town_walking_to_shelter_from_the_next_round():
-    # Town S (cols 2-4) can walk to A; after its road closes it cannot.
+def test_a_closed_road_stops_a_town_walking_to_shelter():
+    # Town S (cols 2-4) can walk to A; once its road closes it cannot.
     world = world_from_map(
         ["A.~~~"], pop=10, shelters={"A": (100, 100)}, communities={"S": (0, 3, 1)}
     )
@@ -67,13 +67,12 @@ def test_a_closed_road_stops_a_town_walking_to_shelter_from_the_next_round():
         Scenario(budget=10_000),
         ScriptedPlanner([plan(open_shelter("A"), cost=100, sheltered=10)]),
         ScriptedAdversary([road_closed("S")]),
-        rounds=2,
+        rounds=1,
     )
 
-    first, second = transcript.rounds
+    first = transcript.rounds[0]
     assert first.result.people_sheltered == 10
-    assert second.scenario.closed_communities == {"S"}
-    assert second.result.people_sheltered == 0
+    assert first.attacked.people_sheltered == 0
 
 
 def test_transport_reaches_a_town_whose_road_is_closed():
@@ -92,7 +91,7 @@ def test_transport_reaches_a_town_whose_road_is_closed():
     assert transcript.rounds[0].result.people_sheltered == 30
 
 
-def test_a_budget_cut_lowers_the_next_rounds_budget():
+def test_a_budget_cut_is_a_test_and_leaves_the_next_rounds_budget_alone():
     world = world_from_map(["A.~"], pop=10, shelters={"A": (10, 100)})
 
     transcript = run_proofloop(
@@ -103,7 +102,7 @@ def test_a_budget_cut_lowers_the_next_rounds_budget():
         rounds=2,
     )
 
-    assert transcript.rounds[1].scenario.budget == 750
+    assert transcript.rounds[1].scenario.budget == 1_000
 
 
 def test_after_a_cut_actions_beyond_the_budget_lose_funding_in_plan_order():
@@ -119,9 +118,8 @@ def test_after_a_cut_actions_beyond_the_budget_lose_funding_in_plan_order():
         rounds=1,
     )
 
-    assert transcript.final_scenario.budget == 300
-    recommended = transcript.recommendation.result
-    assert (recommended.people_sheltered, recommended.unfunded_actions) == (5, 1)
+    attacked = transcript.rounds[0].attacked
+    assert (attacked.people_sheltered, attacked.unfunded_actions) == (5, 1)
 
 
 def test_a_contingency_reserve_keeps_a_plan_funded_through_a_budget_cut():
@@ -140,7 +138,7 @@ def test_a_contingency_reserve_keeps_a_plan_funded_through_a_budget_cut():
             ScriptedAdversary([budget_cut(30)]),
             rounds=1,
         )
-        sheltered[name] = transcript.recommendation.result.people_sheltered
+        sheltered[name] = transcript.rounds[0].attacked.people_sheltered
 
     # The reserve absorbs the cut; the wasted $1,000 pushes A past the new budget.
     assert sheltered == {"reserve": 10, "wasted": 0}

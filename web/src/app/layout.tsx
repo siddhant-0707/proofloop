@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ProofLoop",
-  description: "Hurricane response plans stress-tested against NISAR radar observations.",
+  title: "Cascade",
+  description: "Cascade: disaster plans that survive the cascade.",
 };
 
 export default function RootLayout({

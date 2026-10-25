@@ -1,4 +1,4 @@
-# ProofLoop
+# Cascade
 
 Stress-tested hurricane response plans, verified against NISAR radar.
 See `README.md` for setup and `docs/plan.md` for agreed decisions.

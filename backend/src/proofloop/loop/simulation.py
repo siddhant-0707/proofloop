@@ -1,6 +1,7 @@
 """Deterministic scoring of a Plan against a World under a Scenario. No randomness, no LLM.
 
-People in flooded cells are affected. An affected cell can reach an open shelter
+People in flooded cells are affected; a scenario scoped to one town counts only
+the flooded cells within its radius. An affected cell can reach an open shelter
 when a 4-connected path from it to the shelter, at most `world.reach_cells` steps
 long, crosses only dry cells after leaving the starting cell. Each shelter fills
 its capacity with the nearest reachable people first; shelters are filled in
@@ -11,15 +12,12 @@ their own; a shelter inside the community stays reachable for them.
 Staged transport then carries a community's remaining people, nearest to its
 center first, into open shelters that still have room, closed road or not.
 
-Once people flooded outside FEMA flood zones are unwarned, they stay home (they
-think they are safe) unless outreach reaches their community; they still count
-as affected.
-
 Actions are funded in plan order while their running cost fits the budget; a
 contingency reserve is money held back, so it needs no funding. A plan that the
 budget (after any cut) cannot fully fund loses its last actions.
 """
 
+from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
@@ -32,21 +30,61 @@ from proofloop.loop.schemas import (
     Scenario,
     SimulationResult,
     StageTransport,
-    TargetOutreach,
 )
 from proofloop.world import Shelter, World
 
 _UNREACHED = np.iinfo(np.int32).max // 2
 
 
+@dataclass(frozen=True)
+class Walked:
+    """People who reach one shelter on their own, per affected cell."""
+
+    rows: np.ndarray
+    cols: np.ndarray
+    people: np.ndarray
+
+
+@dataclass(frozen=True)
+class Carried:
+    """People staged transport carries from a community to one shelter."""
+
+    community_id: str
+    shelter_id: str
+    people: float
+
+
+@dataclass(frozen=True)
+class Trace:
+    """A plan's score plus where every affected person ends up, for evidence and briefings."""
+
+    result: SimulationResult
+    funded: list[Action]
+    affected: np.ndarray
+    unreached: np.ndarray
+    walked: dict[str, Walked]
+    carried: list[Carried]
+
+
 def simulate(world: World, scenario: Scenario, plan: Plan) -> SimulationResult:
-    affected = np.where(world.hazard.flooded, world.population, 0.0)
+    return trace(world, scenario, plan).result
+
+
+def affected_people(world: World, scenario: Scenario) -> np.ndarray:
+    """People per cell in flooded cells, within the scenario's town when it has one."""
+    flooded = world.hazard.flooded
+    if scenario.scope is not None and (town := world.community(scenario.scope)):
+        flooded = flooded & town.mask(world.grid.shape)
+    return np.where(flooded, world.population, 0.0)
+
+
+def trace(world: World, scenario: Scenario, plan: Plan) -> Trace:
+    affected = affected_people(world, scenario)
     remaining = affected.copy()
     funded, unfunded = _funded_actions(world, scenario, plan)
-    staying_home = np.where(_staying_home(world, scenario, funded), remaining, 0.0)
-    remaining -= staying_home
 
     room: dict[str, float] = {}  # spare capacity of each open shelter, in plan order
+    walked: dict[str, Walked] = {}
     for action in funded:
         if isinstance(action, OpenShelter):
             shelter = world.shelter(action.shelter_id)
@@ -54,28 +92,27 @@ def simulate(world: World, scenario: Scenario, plan: Plan) -> SimulationResult:
                 continue
             rows, cols = _reachable_cells(world, shelter)
             keep = ~_cells_cut_off_from_shelter(world, scenario, shelter)[rows, cols]
-            room[shelter.id] = shelter.capacity - _fill(
-                remaining, rows[keep], cols[keep], shelter.capacity
-            )
+            taken = _fill(remaining, rows[keep], cols[keep], shelter.capacity)
+            walked[shelter.id] = Walked(rows[keep], cols[keep], taken)
+            room[shelter.id] = shelter.capacity - float(taken.sum())
 
+    carried: list[Carried] = []
     for action in funded:
         if isinstance(action, StageTransport):
-            _transport(world, action, remaining, room)
+            carried += _transport(world, action, remaining, room)
 
-    remaining += staying_home
-    outside_zones = world.flooded_outside_fema_zones()
     people_affected = float(affected.sum())
     people_unreached = float(remaining.sum())
     people_sheltered = people_affected - people_unreached
-    return SimulationResult(
+    result = SimulationResult(
         people_affected=people_affected,
         people_sheltered=people_sheltered,
         people_unreached=people_unreached,
-        cost=sum(action_cost(world, a) for a in _billable(plan.actions)),
+        cost=sum(action_cost(world, a) for a in billable(plan.actions)),
         robustness=people_sheltered / people_affected if people_affected else 1.0,
         unfunded_actions=unfunded,
-        people_unreached_outside_zones=float(remaining[outside_zones].sum()),
     )
+    return Trace(result, funded, affected, remaining, walked, carried)
 
 
 def action_cost(world: World, action: Action) -> float:
@@ -84,8 +121,6 @@ def action_cost(world: World, action: Action) -> float:
         return shelter.cost if shelter else 0.0
     if isinstance(action, StageTransport):
         return action.seats * world.transport_cost_per_seat
-    if isinstance(action, TargetOutreach):
-        return world.outreach_cost
     return action.amount
 
 
@@ -96,9 +131,7 @@ def _funded_actions(world: World, scenario: Scenario, plan: Plan) -> tuple[list[
     first). The reserve is held back, not spent, so it needs no funding.
     """
     spent = 0.0
-    actions: list[Action] = [
-        a for a in _billable(plan.actions) if not isinstance(a, AllocateBudget)
-    ]
+    actions: list[Action] = [a for a in billable(plan.actions) if not isinstance(a, AllocateBudget)]
     for i, action in enumerate(actions):
         spent += action_cost(world, action)
         if spent > scenario.budget:
@@ -106,18 +139,7 @@ def _funded_actions(world: World, scenario: Scenario, plan: Plan) -> tuple[list[
     return actions, 0
 
 
-def _staying_home(world: World, scenario: Scenario, funded: list[Action]) -> np.ndarray:
-    """Cells whose people stay home: unwarned, outside FEMA zones, and missed by outreach."""
-    staying = world.flooded_outside_fema_zones() if scenario.unwarned_outside_zones else None
-    if staying is None or not staying.any():
-        return np.zeros(world.grid.shape, dtype=bool)
-    for action in funded:
-        if isinstance(action, TargetOutreach) and (c := world.community(action.community_id)):
-            staying &= ~c.mask(world.grid.shape)
-    return staying
-
-
-def _billable(actions: list[Action]) -> list[Action]:
+def billable(actions: list[Action]) -> list[Action]:
     """The plan's actions with repeated shelter openings removed: a shelter is paid for once."""
     seen: set[str] = set()
     billable: list[Action] = []
@@ -143,29 +165,33 @@ def _cells_cut_off_from_shelter(world: World, scenario: Scenario, shelter: Shelt
     return cut_off
 
 
-def _fill(remaining: np.ndarray, rows: np.ndarray, cols: np.ndarray, capacity: float) -> float:
-    """Take up to `capacity` people from the cells in order; return how many were taken."""
+def _fill(remaining: np.ndarray, rows: np.ndarray, cols: np.ndarray, capacity: float) -> np.ndarray:
+    """Take up to `capacity` people from the cells in order; return how many each gave."""
     people = remaining[rows, cols]
     ahead = np.cumsum(people) - people
     taken = np.clip(capacity - ahead, 0.0, people)
     remaining[rows, cols] -= taken
-    return float(taken.sum())
+    return taken
 
 
 def _transport(
     world: World, action: StageTransport, remaining: np.ndarray, room: dict[str, float]
-) -> None:
+) -> list[Carried]:
     community = world.community(action.community_id)
     if community is None:
-        return
+        return []
     seats = min(float(action.seats), sum(room.values()))
     rows, cols = np.nonzero(community.mask(world.grid.shape) & (remaining > 0))
     order = np.argsort((rows - community.row) ** 2 + (cols - community.col) ** 2, kind="stable")
-    moved = _fill(remaining, rows[order], cols[order], seats)
+    moved = float(_fill(remaining, rows[order], cols[order], seats).sum())
+    carried: list[Carried] = []
     for shelter_id in room:  # the people moved take spare beds in plan order
         taken = min(room[shelter_id], moved)
         room[shelter_id] -= taken
         moved -= taken
+        if taken > 0:
+            carried.append(Carried(community.id, shelter_id, taken))
+    return carried
 
 
 @lru_cache(maxsize=64)

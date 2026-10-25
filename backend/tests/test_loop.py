@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from loop_worlds import offline, open_plan, open_shelter, plan, reserve, world_from_map
 
-from proofloop.loop import AgentReply, ScriptedAdversary, ScriptedPlanner, run_proofloop
+from proofloop.loop import AgentReply, ScriptedAdversary, ScriptedPlanner, run_proofloop, verify
 from proofloop.loop.schemas import Scenario
 
 
@@ -84,7 +84,7 @@ def test_the_detour_around_a_flood_counts_toward_travel_reach():
     assert sheltered == {7: 20, 8: 30}
 
 
-def test_an_attack_takes_effect_in_the_next_round():
+def test_an_attack_tests_its_rounds_plan_and_never_carries_into_the_next_round():
     world = world_from_map(["A.~.B"], pop=10, shelters={"A": (10, 100), "B": (10, 100)})
 
     transcript = run_proofloop(
@@ -96,9 +96,10 @@ def test_an_attack_takes_effect_in_the_next_round():
     )
 
     first, second = transcript.rounds
-    assert first.result.people_sheltered == 10
-    assert second.scenario.offline_shelters == {"A"}
-    assert second.result.people_sheltered == 0
+    assert (first.result.people_sheltered, first.attacked.people_sheltered) == (10, 0)
+    assert second.scenario == transcript.base_scenario
+    assert second.result.people_sheltered == 10
+    assert second.verdict.passed
 
 
 def test_a_plan_with_correct_claims_passes_verification():
@@ -187,27 +188,72 @@ def test_a_plan_opening_an_unknown_or_offline_shelter_fails_verification():
     ]
 
 
-def test_recommends_the_verified_plan_that_best_survives_all_attacks():
-    # C is out of travel reach, so a plan relying on it shelters nobody.
-    shelters = {"A": (10, 100), "B": (10, 100), "C": (10, 100)}
-    world = replace(world_from_map(["A.~.B.....C"], pop=10, shelters=shelters), reach_cells=2)
+def test_recommends_the_plan_that_shelters_most_as_planned_and_under_single_failures():
+    shelters = {"A": (10, 100), "B": (10, 100)}
+    world = world_from_map(["A.~.B"], pop=10, shelters=shelters)
 
     transcript = run_proofloop(
         world,
         Scenario(budget=1000),
         ScriptedPlanner(
             [
-                open_plan("A", "B", cost=200, sheltered=10),
-                open_plan("C", cost=100, sheltered=0),
+                open_plan("A", cost=100, sheltered=10),
+                open_plan("A", "B", cost=200, sheltered=10),  # survives losing either shelter
             ]
         ),
         ScriptedAdversary([offline("A"), offline("A")]),
         rounds=2,
     )
 
-    assert transcript.final_scenario.offline_shelters == {"A"}
-    assert transcript.recommendation.round_index == 0
-    assert transcript.recommendation.result.people_sheltered == 10
+    rec = transcript.recommendation
+    assert rec.round_index == 1
+    assert rec.result.people_sheltered == 10
+    first, second, _baseline = rec.candidates
+    assert first.typical < second.typical == 1.0
+
+
+def test_sheltering_everyone_as_planned_beats_coping_better_with_failures():
+    # A alone takes all 20 but any cut drops it; B and C take 18 and keep 9 through a cut.
+    shelters = {"A": (20, 100), "B": (9, 40), "C": (9, 40)}
+    world = world_from_map(["A~~", "B.C"], pop=10, shelters=shelters)
+
+    transcript = run_proofloop(
+        world,
+        Scenario(budget=100),
+        ScriptedPlanner(
+            [
+                open_plan("B", "C", cost=80, sheltered=18),
+                open_plan("A", cost=100, sheltered=20),
+            ]
+        ),
+        ScriptedAdversary([offline("B"), offline("A")]),
+        rounds=2,
+    )
+
+    rec = transcript.recommendation
+    first, second, _baseline = rec.candidates
+    assert first.typical > second.typical
+    assert rec.round_index == 1
+    assert rec.result.robustness == 1.0
+
+
+def test_a_major_failure_that_breaks_every_plan_rejects_none_and_is_reported():
+    world = world_from_map(["A.~"], pop=10, shelters={"A": (10, 100)})
+
+    transcript = run_proofloop(
+        world,
+        Scenario(budget=1000),
+        ScriptedPlanner([open_plan("A", cost=100, sheltered=10)]),
+        ScriptedAdversary([offline("A")]),
+        rounds=3,
+    )
+
+    assert all(r.verdict.passed for r in transcript.rounds)
+    rec = transcript.recommendation
+    assert rec.round_index == 0
+    assert rec.result.people_sheltered == 10
+    assert rec.combined.result.people_sheltered == 0
+    assert len(rec.combined.attacks) == 1  # the same failure, found three times
 
 
 def test_never_recommends_a_plan_that_failed_verification():
@@ -227,7 +273,30 @@ def test_never_recommends_a_plan_that_failed_verification():
         rounds=2,
     )
 
-    assert transcript.recommendation.round_index == 1
+    rec = transcript.recommendation
+    assert rec.round_index != 0
+    assert rec.plan != transcript.rounds[0].plan
+
+
+def test_the_code_built_plan_wins_when_it_shelters_more_than_every_verified_plan():
+    # Round 1 is honest and verified but opens only B (5 spaces); A and S take all 10.
+    shelters = {"A": (10, 100), "B": (5, 100), "S": (10, 100)}
+    world = world_from_map(["A.~.B.S"], pop=10, shelters=shelters)
+
+    transcript = run_proofloop(
+        world,
+        Scenario(budget=1000),
+        ScriptedPlanner([open_plan("B", cost=100, sheltered=5)]),
+        ScriptedAdversary([offline("S")]),
+        rounds=1,
+    )
+
+    rec = transcript.recommendation
+    assert transcript.rounds[0].verdict.passed
+    assert [c.round_index for c in rec.candidates] == [0, None]
+    assert rec.round_index is None
+    assert rec.result.people_sheltered == 10
+    assert rec.full_cover_cost is None
 
 
 def test_malformed_planner_output_is_recorded_and_the_round_falls_back_to_the_best_plan():
@@ -245,6 +314,7 @@ def test_malformed_planner_output_is_recorded_and_the_round_falls_back_to_the_be
     second = transcript.rounds[1]
     assert "evacuate_by_helicopter" in second.planner_error
     assert second.plan == transcript.rounds[0].plan
+    assert second.plan_from_round == 0
     assert second.result.people_sheltered == 10
 
 
@@ -263,7 +333,25 @@ def test_malformed_planner_output_in_the_first_round_leaves_the_round_without_a_
     assert first.planner_error
     assert first.plan is None
     assert first.result is None
-    assert transcript.recommendation is None
+
+
+def test_with_no_verified_plan_code_builds_the_baseline_plan():
+    world = world_from_map(["A.~.B"], pop=10, shelters={"A": (10, 100), "B": (10, 300)})
+
+    transcript = run_proofloop(
+        world,
+        Scenario(budget=1000),
+        ScriptedPlanner([open_plan("A", cost=100, sheltered=999)]),  # false claim every round
+        ScriptedAdversary([offline("A")]),
+        rounds=2,
+    )
+
+    assert not any(r.verdict.passed for r in transcript.rounds)
+    rec = transcript.recommendation
+    assert rec.round_index is None
+    assert [c.round_index for c in rec.candidates] == [None]
+    assert rec.plan.shelter_ids == ["A", "B"]  # survives losing either
+    assert verify(world, transcript.base_scenario, rec.plan).passed
 
 
 def test_a_failing_agent_is_recorded_rather_than_crashing_the_run():
@@ -281,9 +369,10 @@ def test_a_failing_agent_is_recorded_rather_than_crashing_the_run():
         rounds=2,
     )
 
-    assert transcript.rounds[0].adversary_error == "TimeoutError: model did not answer"
-    assert transcript.final_adversary_error == "TimeoutError: model did not answer"
-    assert transcript.final_scenario == transcript.base_scenario
+    assert [r.adversary_error for r in transcript.rounds] == [
+        "TimeoutError: model did not answer"
+    ] * 2
+    assert transcript.recommendation.combined is None
 
 
 def test_runs_three_rounds_by_default():
@@ -299,7 +388,7 @@ def test_runs_three_rounds_by_default():
     assert [r.index for r in transcript.rounds] == [0, 1, 2]
 
 
-def test_the_final_attack_lands_after_the_last_round_and_is_reported_separately():
+def test_every_failure_found_is_reported_all_at_once_for_the_recommended_plan():
     world = world_from_map(["A.~.B"], pop=10, shelters={"A": (10, 100), "B": (10, 100)})
 
     transcript = run_proofloop(
@@ -310,15 +399,12 @@ def test_the_final_attack_lands_after_the_last_round_and_is_reported_separately(
         rounds=2,
     )
 
-    assert [
-        r.attack.model_dump().get("shelter_id") if r.attack else None for r in transcript.rounds
-    ] == [
-        "A",
-        None,
-    ]
-    assert transcript.final_attack.model_dump()["shelter_id"] == "B"
-    assert transcript.final_scenario.offline_shelters == {"A", "B"}
-    assert transcript.recommendation.result.people_sheltered == 0
+    assert [r.attack.model_dump()["shelter_id"] for r in transcript.rounds] == ["A", "B"]
+    assert [r.attacked.people_sheltered for r in transcript.rounds] == [10, 10]
+    rec = transcript.recommendation
+    assert rec.result.people_sheltered == 10
+    assert [a.model_dump()["shelter_id"] for a in rec.combined.attacks] == ["A", "B"]
+    assert rec.combined.result.people_sheltered == 0
 
 
 def test_an_attack_on_an_unknown_shelter_is_rejected():
@@ -335,7 +421,7 @@ def test_an_attack_on_an_unknown_shelter_is_rejected():
     first = transcript.rounds[0]
     assert first.attack is None
     assert "unknown shelter Z" in first.adversary_error
-    assert transcript.rounds[1].scenario == transcript.base_scenario
+    assert transcript.rounds[0].attacked is None
 
 
 def test_records_which_model_and_provider_answered_each_agent_call():
@@ -364,9 +450,9 @@ def test_records_which_model_and_provider_answered_each_agent_call():
     planner_call = transcript.rounds[0].planner_call
     assert (planner_call.provider, planner_call.model) == ("gemini", "gemma-4-26b-a4b-it")
     assert planner_call.seconds >= 0
-    assert transcript.final_adversary_call.provider == "openrouter"
-    assert transcript.final_adversary_call.skipped == ["gemini: RateLimited: 429"]
-    assert transcript.recommendation.plan.shelter_ids == ["A"]
+    adversary_call = transcript.rounds[0].adversary_call
+    assert adversary_call.provider == "openrouter"
+    assert adversary_call.skipped == ["gemini: RateLimited: 429"]
 
 
 def test_scripted_agents_without_model_details_are_recorded_as_rule_based():
@@ -466,6 +552,6 @@ def test_a_run_can_skip_the_final_attack():
     )
 
     assert CountingAdversary.calls == 0
-    assert transcript.final_attack is None
-    assert transcript.final_scenario == transcript.base_scenario
+    assert transcript.rounds[0].attack is None
+    assert transcript.recommendation.combined is None
     assert transcript.recommendation.result.people_sheltered == 10
