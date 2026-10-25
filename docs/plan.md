@@ -274,3 +274,14 @@ Agreed on 2026-10-25 for the demo, on the `demo-visuals` branch.
   The zoomed-out block popups are gone with the blocks.
 - **FEMA zones:** a checkbox, on by default; still context only.
 - **Narrow screens:** the start screen fits the area below the start card.
+
+## Before/after swipe (#29)
+
+- **What it shows:** the map as it was on the Sep 28 pass, before the storm, left of a draggable divider, and with the flooding radar flagged on the Oct 10 pass right of it. Flooding is found from the change between the passes, so the map before has no flood layer of its own. The raw greyscale backscatter was tried first and dropped: unreadable without radar training.
+- **Other layers:** FEMA zones, population, shelters and towns show on both sides; the flooding checkbox and "hide cells where nobody lives" still apply right of the divider.
+- **On the map:** "Compare before / after" in Layers, off by default and hidden while a run plays. Zoomed out, the flood surface is redrawn into a canvas cut at the divider as it or the map moves; close in, the cells left of the divider are filtered out once it or the map stops. No backend change.
+- **Divider:** drag the line or its handle (mouse or touch), or use the arrow keys on the handle; it stays under the start card and the map's controls.
+
+## Renamed cascade.ai
+
+Agreed on 2026-10-25: the product is renamed cascade.ai, always with a small c (the code and repo keep the `proofloop` name); the sections above keep the name they were agreed under.
