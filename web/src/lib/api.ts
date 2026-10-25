@@ -148,13 +148,28 @@ export type LoopEvent =
   | { type: "transcript"; transcript: Transcript }
   | { type: "error"; detail: string };
 
+/** The base Scenario the user starts from. Keep in sync with BIG_BEND_SCENARIO in api/app.py. */
+export const DEFAULT_SCENARIO: Scenario = {
+  budget: 150_000,
+  offline_shelters: [],
+  closed_communities: [],
+  unwarned_outside_zones: false,
+};
+
 /** Runs the Loop on the server and calls `onEvent` for each event as it arrives. */
 export async function streamLoop(
   agents: AgentKind,
+  scenario: Scenario,
+  rounds: number,
   onEvent: (event: LoopEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`/api/loop/stream?agents=${agents}`, { method: "POST", signal });
+  const response = await fetch(`/api/loop/stream?agents=${agents}&rounds=${rounds}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(scenario),
+    signal,
+  });
   if (!response.ok || !response.body) {
     throw new Error(`${response.status} ${response.statusText}: ${await response.text()}`);
   }

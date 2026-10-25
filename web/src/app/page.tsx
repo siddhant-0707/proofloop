@@ -1,5 +1,4 @@
-import HazardMap from "@/components/HazardMap";
-import RoundsPanel from "@/components/RoundsPanel";
+import Dashboard from "@/components/Dashboard";
 
 export default function Home() {
   return (
@@ -10,12 +9,7 @@ export default function Home() {
           Hurricane Isaias · Dixie and Taylor counties, Florida · plans attacked until they hold
         </p>
       </header>
-      <div className="grid flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="h-[75vh] lg:sticky lg:top-4 lg:h-[calc(100vh-7rem)] lg:self-start">
-          <HazardMap />
-        </div>
-        <RoundsPanel />
-      </div>
+      <Dashboard />
     </main>
   );
 }
