@@ -63,6 +63,7 @@ def test_the_report_writes_the_plan_up_as_an_operations_plan():
         ("transport", "Transport for Town S", 30, 4_500, True),
         ("reserve", "Contingency reserve", None, 1_000, True),
     ]
+    assert [a.capacity for a in report.assignments] == [100, None, None]
     assert report.result.people_sheltered == 50
     assert RADAR_LIMITATION in report.limitations
     assert {s.id for s in report.references} >= {"S1", "S3", "S4", "S6"}
