@@ -78,11 +78,19 @@ class ShelterInfo(BaseModel):
     cost: float
 
 
+class CommunityInfo(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+
+
 class ExposureInfo(BaseModel):
     total_population: float
     people_in_flooded_cells: float
     population_image_url: str
     shelters: list[ShelterInfo]
+    communities: list[CommunityInfo]
 
 
 # Enough to open two of the four shelters; sliders will edit this base scenario.
@@ -166,6 +174,12 @@ def exposure() -> ExposureInfo:
                 cost=s.cost,
             )
             for s in world.shelters
+        ],
+        communities=[
+            CommunityInfo(
+                id=c.id, name=c.name, latitude=float(lat[c.row]), longitude=float(lon[c.col])
+            )
+            for c in world.communities
         ],
     )
 

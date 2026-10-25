@@ -12,12 +12,15 @@ from proofloop.loop.agents import (
     ScriptedPlanner,
 )
 from proofloop.loop.schemas import (
+    ATTACK,
     AgentCall,
     Attack,
     Plan,
     Recommendation,
+    RoadClosed,
     Round,
     Scenario,
+    ShelterOffline,
     Transcript,
 )
 from proofloop.loop.simulation import simulate
@@ -99,7 +102,7 @@ def run_proofloop(
             final_attack, final_adversary_error = attack, adversary_error
             final_adversary_call = adversary_call
         if attack is not None:
-            current = current.with_offline(attack.shelter_id)
+            current = _apply(current, attack)
 
     return Transcript(
         base_scenario=scenario,
@@ -135,10 +138,20 @@ def _ask[T](
 
 
 def _validate_attack(world: World, raw: Any) -> Attack:
-    attack = Attack.model_validate(raw)
-    if world.shelter(attack.shelter_id) is None:
+    attack = ATTACK.validate_python(raw)
+    if isinstance(attack, ShelterOffline) and world.shelter(attack.shelter_id) is None:
         raise ValueError(f"unknown shelter {attack.shelter_id}")
+    if isinstance(attack, RoadClosed) and world.community(attack.community_id) is None:
+        raise ValueError(f"unknown community {attack.community_id}")
     return attack
+
+
+def _apply(scenario: Scenario, attack: Attack) -> Scenario:
+    if isinstance(attack, ShelterOffline):
+        return scenario.with_offline(attack.shelter_id)
+    if isinstance(attack, RoadClosed):
+        return scenario.with_closed(attack.community_id)
+    return scenario.with_budget_cut(attack.percent)
 
 
 def _recommend(world: World, final: Scenario, rounds: list[Round]) -> Recommendation | None:

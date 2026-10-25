@@ -1,7 +1,8 @@
 """Gemma 4 Planner and Adversary.
 
-Both see the same facts the Simulation uses: shelters, their capacity, cost and
-availability, and how many affected people each can reach on its own. The
+Both see the same facts the Simulation uses: shelters (capacity, cost, availability
+and how many affected people each can reach on its own), communities (affected
+people and whether their road is open), the budget and the transport price. The
 Planner also sees the Verifier's findings from earlier rounds.
 
 The Planner has one check step: it drafts a plan, code simulates the draft, and
@@ -15,37 +16,50 @@ from collections.abc import Sequence
 from proofloop.gemma.client import GemmaClient, Generation
 from proofloop.gemma.sources import source_pack
 from proofloop.loop.agents import AgentReply
+from proofloop.loop.describe import describe_action, describe_attack
 from proofloop.loop.schemas import Attack, Plan, Round, Scenario, SimulationResult
-from proofloop.loop.simulation import simulate
-from proofloop.world import World
+from proofloop.loop.simulation import action_cost, simulate
+from proofloop.world import Community, World
 
 PLANNER_SYSTEM = """You are the Planner for a county emergency manager after a hurricane.
-Choose which shelters to open so that as many affected people as possible are sheltered,
-within the budget, and so that the plan still works if any single shelter goes offline.
+Shelter as many affected people as possible within the budget, with a plan that still
+works after a red team knocks out a shelter, closes a road or cuts the budget.
+
+Actions (use any mix, in priority order; earlier actions are funded first):
+- open_shelter(shelter_id): people who can reach it on their own go there.
+- stage_transport(community_id, seats): high-water vehicles carry up to `seats` of that
+  community's remaining affected people into open shelters with spare beds, even if its
+  road is closed. Costs {seat_cost} per seat.
+- allocate_budget(contingency_reserve, amount): money held back (at least $1,000). If the
+  budget is cut later, the reserve absorbs the cut before any action loses funding.
 
 Rules:
-- Only open shelters from the list, and never one marked OFFLINE.
-- Total cost must never exceed the budget, even if that means sheltering fewer people.
-  A plan over budget is rejected outright.
-- Claims are checked by exact simulation. claims.cost is the sum of the costs of the
-  shelters you open. claims.people_sheltered must match the simulation within 1%:
-  a shelter shelters at most its capacity, only people it can reach, and people
-  reachable from several shelters are counted once.
+- Only use shelters and communities from the lists, and never a shelter marked OFFLINE.
+- Total cost (all actions, including any reserve) must never exceed the budget, even if
+  that means sheltering fewer people. A plan over budget is rejected outright.
+- Claims are checked by exact simulation. claims.cost is the total cost of all actions.
+  claims.people_sheltered must match the simulation within 1%: a shelter takes at most
+  its capacity, people reachable from several shelters are counted once, and transport
+  only fills beds the shelters you open still have free.
 - If an earlier round's claims were rejected, learn from the recomputed numbers.
 - You get one simulation check of a draft before your final answer. If you change
-  the shelters after the check, your claims must be your own best estimate.
-- rationale: two or three sentences for the emergency manager, naming shelters by name
-  (not id) and citing sources as [S1], [S2].
+  the actions after the check, your claims must be your own best estimate.
+- rationale: two or three sentences for the emergency manager, naming shelters and
+  communities by name (not id) and citing sources as [S1], [S2].
 
 Sources:
 {sources}"""
 
 ADVERSARY_SYSTEM = """You are the Adversary, a red team testing a hurricane response plan.
-Choose exactly one shelter to take offline (power loss, flooding, staff shortage) so
-that the plan shelters as few people as possible. Prefer a shelter the plan relies on.
-Only choose a shelter from the list.
-rationale: one or two sentences on why this shelter could fail and why losing it hurts,
-naming shelters by name (not id) and citing sources as [S1], [S2].
+Choose exactly one attack that leaves the plan sheltering as few people as possible:
+- shelter_offline(shelter_id): power loss, flooding or a staff shortage closes a shelter.
+- road_closed(community_id): flooding or debris cuts a community's road, so its people
+  cannot reach a shelter on their own (transport still gets through).
+- budget_cut(percent, 10 to 50): the county loses money; actions the smaller budget
+  cannot fund are dropped, last first, after any contingency reserve is used up.
+Prefer what the plan relies on most. Only use shelters and communities from the lists.
+rationale: one or two sentences on why this could happen and why it hurts, naming
+shelters and communities by name (not id) and citing sources as [S1], [S2].
 
 Sources:
 {sources}"""
@@ -56,16 +70,19 @@ class GemmaPlanner:
         self._client = client
 
     def propose(self, world: World, scenario: Scenario, history: Sequence[Round]) -> AgentReply:
-        system = PLANNER_SYSTEM.format(sources=source_pack())
-        allowed = {"shelter_id": _available(world, scenario)}
-        situation = "\n\n".join([_situation(world, scenario), _history(history)])
+        system = PLANNER_SYSTEM.format(
+            sources=source_pack(), seat_cost=f"${world.transport_cost_per_seat:,.0f}"
+        )
+        # Transport only makes sense where people are affected.
+        allowed = {**_allowed(world, scenario), "community_id": _affected_communities(world)}
+        situation = "\n\n".join([_situation(world, scenario), _history(history, world)])
 
         draft = self._client.generate(system, f"{situation}\n\nDraft a plan.", Plan, allowed)
         checked = simulate(world, scenario, draft.value)
         final = self._client.generate(
             system,
             "\n\n".join(
-                [situation, _check(draft.value, checked, scenario), "Give your final plan."]
+                [situation, _check(draft.value, checked, scenario, world), "Give your final plan."]
             ),
             Plan,
             allowed,
@@ -83,15 +100,16 @@ class GemmaAdversary:
         lines = [_situation(world, scenario)]
         if plan and result:
             lines.append(
-                f"The plan opens shelters {_shelters(plan)} and shelters "
-                f"{result.people_sheltered:.0f} of {result.people_affected:.0f} affected people."
+                f"The plan will {_actions(plan, world)}. It shelters "
+                f"{result.people_sheltered:.0f} of {result.people_affected:.0f} affected people "
+                f"and costs ${result.cost:,.0f}."
             )
-        lines.append("Choose one shelter to take offline.")
+        lines.append("Choose one attack.")
         generation = self._client.generate(
             ADVERSARY_SYSTEM.format(sources=source_pack()),
             "\n\n".join(lines),
             Attack,
-            allowed={"shelter_id": _available(world, scenario)},
+            allowed=_allowed(world, scenario),
         )
         return _reply(generation, world, skipped=generation.skipped)
 
@@ -108,14 +126,15 @@ def _reply(generation: Generation, world: World, skipped: list[str]) -> AgentRep
 
 
 def _with_shelter_names(text: str, world: World) -> str:
-    """Gemma sometimes cites shelters by id despite the prompt; show their names instead."""
-    for shelter in sorted(world.shelters, key=lambda s: len(s.id), reverse=True):
-        text = re.sub(rf"\b{re.escape(shelter.id)}\b", shelter.name, text)
+    """Gemma sometimes cites places by id despite the prompt; show their names instead."""
+    places = [(s.id, s.name) for s in world.shelters] + [(c.id, c.name) for c in world.communities]
+    for place_id, name in sorted(places, key=lambda p: len(p[0]), reverse=True):
+        text = re.sub(rf"\b{re.escape(place_id)}\b", name, text)
     return text
 
 
-def _shelters(plan: Plan) -> str:
-    return ", ".join(plan.shelter_ids) or "none"
+def _actions(plan: Plan, world: World) -> str:
+    return "; ".join(describe_action(a, world) for a in plan.actions) or "do nothing"
 
 
 def _situation(world: World, scenario: Scenario) -> str:
@@ -130,48 +149,76 @@ def _situation(world: World, scenario: Scenario) -> str:
             f"- id {shelter.id} ({shelter.name}): capacity {shelter.capacity:.0f}, "
             f"cost ${shelter.cost:,.0f}, can shelter {alone:.0f} people on its own"
         )
+    towns = []
+    for community in world.communities:
+        people = _affected_in(world, community)
+        road = "road CLOSED" if community.id in scenario.closed_communities else "road open"
+        towns.append(f"- id {community.id} ({community.name}): {people:.0f} affected, {road}")
     return "\n".join(
         [
-            f"Affected people: {affected:.0f}. Budget: ${scenario.budget:,.0f}.",
+            f"Affected people: {affected:.0f}. Budget: ${scenario.budget:,.0f}. "
+            f"Transport: ${world.transport_cost_per_seat:,.0f} per seat.",
             "Shelters (refer to them by id):",
             *rows,
+            *(["Communities (refer to them by id):", *towns] if towns else []),
         ]
     )
 
 
-def _check(draft: Plan, result: SimulationResult, scenario: Scenario) -> str:
+def _check(draft: Plan, result: SimulationResult, scenario: Scenario, world: World) -> str:
     check = (
-        f"Simulation check of your draft (opens {_shelters(draft)}): "
+        f"Simulation check of your draft ({_actions(draft, world)}): "
         f"cost ${result.cost:,.0f}, shelters {result.people_sheltered:.0f} of "
         f"{result.people_affected:.0f} affected people "
-        f"(you claimed ${draft.claims.cost:,.0f} and {draft.claims.people_sheltered:.0f})."
+        f"(you claimed ${draft.claims.cost:,.0f} and {draft.claims.people_sheltered:.0f}). "
+        f"Cost of each action: {_cost_breakdown(draft, world)}; total ${result.cost:,.0f}. "
+        "Your final claims.cost must be the total for your final actions."
     )
     if result.cost > scenario.budget:
         return (
             f"{check} The draft is OVER BUDGET by ${result.cost - scenario.budget:,.0f}. "
-            f"Your final plan must cost at most ${scenario.budget:,.0f}; drop or swap shelters."
+            f"Your final plan must cost at most ${scenario.budget:,.0f}; drop or shrink actions."
         )
     return f"{check} Keep the draft or improve it."
 
 
-def _available(world: World, scenario: Scenario) -> list[str]:
-    return [s.id for s in world.shelters if s.id not in scenario.offline_shelters]
+def _cost_breakdown(plan: Plan, world: World) -> str:
+    return "; ".join(
+        f"{describe_action(a, world)} ${action_cost(world, a):,.0f}" for a in plan.actions
+    )
 
 
-def _history(history: Sequence[Round]) -> str:
+def _affected_communities(world: World) -> list[str]:
+    return [c.id for c in world.communities if _affected_in(world, c) > 0]
+
+
+def _affected_in(world: World, community: Community) -> float:
+    return float(world.population[community.mask(world.grid.shape) & world.hazard.flooded].sum())
+
+
+def _allowed(world: World, scenario: Scenario) -> dict[str, list[str]]:
+    allowed = {
+        "shelter_id": [s.id for s in world.shelters if s.id not in scenario.offline_shelters]
+    }
+    if world.communities:
+        allowed["community_id"] = [c.id for c in world.communities]
+    return allowed
+
+
+def _history(history: Sequence[Round], world: World) -> str:
     if not history:
         return "This is the first round."
     lines = ["Earlier rounds:"]
     for round_ in history:
-        opened = _shelters(round_.plan) if round_.plan else "none (no valid plan)"
-        line = f"- Round {round_.index + 1}: opened {opened}"
+        did = _actions(round_.plan, world) if round_.plan else "no valid plan"
+        line = f"- Round {round_.index + 1}: {did}"
         if round_.result:
             line += f", sheltered {round_.result.people_sheltered:.0f}"
         if round_.verdict and not round_.verdict.passed:
             failed = "; ".join(c.reason or c.name for c in round_.verdict.checks if not c.passed)
             line += f". REJECTED by the Verifier: {failed}"
         if round_.attack:
-            line += f". Then shelter {round_.attack.shelter_id} went offline"
+            line += f". Then {describe_attack(round_.attack, world)}"
         lines.append(line + ".")
     return "\n".join(lines)
 

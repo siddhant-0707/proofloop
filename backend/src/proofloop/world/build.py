@@ -14,13 +14,20 @@ import urllib.error
 from pathlib import Path
 
 from proofloop.exposure.census import block_files, download_blocks, load_blocks
+from proofloop.exposure.communities import COMMUNITY_SITES
 from proofloop.exposure.shelters import SHELTER_SITES
 from proofloop.nisar.gcov import read_gcov, write_gcov_crop
 from proofloop.nisar.manifest import GRANULES, Granule, Product
 from proofloop.nisar.remote import RemoteFile, signed_url
 from proofloop.nisar.sme2 import BBox
 from proofloop.paths import NISAR_CROPS_DIR, RAW_NISAR_DIR, WORLD_CACHE
-from proofloop.world.builder import GCOV_CELL_M, GranulePair, build_world, with_exposure
+from proofloop.world.builder import (
+    GCOV_CELL_M,
+    GranulePair,
+    build_world,
+    with_communities,
+    with_exposure,
+)
 from proofloop.world.store import save_world
 
 # Dixie County and Taylor County from the coast north through Perry, where Taylor County's
@@ -50,13 +57,15 @@ def main() -> None:
 
     pairs = [pair for pair in sme2 if pair is not None]
     world = with_exposure(build_world(BIG_BEND, pairs, gcov), blocks, SHELTER_SITES)
+    world = with_communities(world, COMMUNITY_SITES)
     save_world(world, WORLD_CACHE)
     rows, cols = world.grid.shape
     affected = world.population[world.hazard.flooded].sum()
     print(
         f"wrote {WORLD_CACHE} ({world.hazard.method}, {rows}x{cols} cells, "
         f"{int(world.hazard.flooded.sum())} flagged, {world.population.sum():,.0f} people, "
-        f"{affected:,.0f} in flagged cells, {len(world.shelters)} shelters)"
+        f"{affected:,.0f} in flagged cells, {len(world.shelters)} shelters, "
+        f"{len(world.communities)} communities)"
     )
 
 

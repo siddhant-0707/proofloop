@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 
 class ProviderError(Exception):
@@ -31,8 +31,8 @@ class Provider(Protocol):
 
 
 @dataclass(frozen=True)
-class Generation[T: BaseModel]:
-    value: T
+class Generation:
+    value: Any  # an instance of the requested schema
     provider: str
     model: str
     # Why earlier providers were skipped, e.g. "gemini: RateLimited: 429".
@@ -50,10 +50,13 @@ class GemmaClient:
     def __init__(self, providers: Sequence[Provider]):
         self._providers = list(providers)
 
-    def generate[T: BaseModel](
-        self, system: str, prompt: str, schema: type[T], allowed: Allowed | None = None
-    ) -> Generation[T]:
+    def generate(
+        self, system: str, prompt: str, schema: Any, allowed: Allowed | None = None
+    ) -> Generation:
         """Ask each provider in turn for an answer matching `schema`.
+
+        `schema` is a pydantic model or any type pydantic can validate, such as a
+        discriminated union of models.
 
         `allowed` restricts named fields (anywhere in the schema) to a set of values,
         e.g. {"shelter_id": ["A", "B"]}.
@@ -74,9 +77,9 @@ class GemmaClient:
             )
         raise GenerationFailed("; ".join(skipped))
 
-    def _ask[T: BaseModel](
-        self, provider: Provider, system: str, prompt: str, schema: type[T], allowed: Allowed
-    ) -> T:
+    def _ask(
+        self, provider: Provider, system: str, prompt: str, schema: Any, allowed: Allowed
+    ) -> BaseModel:
         """One attempt, plus one retry that shows the model why it was rejected."""
         json_schema = strict_schema(schema, allowed)
         try:
@@ -89,9 +92,9 @@ class GemmaClient:
             return _parse(provider.complete(system, retry, json_schema), schema, allowed)
 
 
-def _parse[T: BaseModel](text: str, schema: type[T], allowed: Allowed) -> T:
+def _parse(text: str, schema: Any, allowed: Allowed) -> BaseModel:
     try:
-        value = schema.model_validate_json(text)
+        value = TypeAdapter(schema).validate_json(text)
     except ValidationError as error:
         raise InvalidAnswer(_summary(error)) from error
     problems = list(_disallowed(value.model_dump(), allowed, path=""))
@@ -112,7 +115,7 @@ def _disallowed(node: Any, allowed: Allowed, path: str):
             yield from _disallowed(child, allowed, f"{path}.{i}")
 
 
-def strict_schema(schema: type[BaseModel], allowed: Allowed | None = None) -> dict[str, Any]:
+def strict_schema(schema: Any, allowed: Allowed | None = None) -> dict[str, Any]:
     """The schema in the plain form providers enforce best.
 
     Definitions are inlined, `const` becomes a one-value `enum`, every property is
@@ -120,7 +123,7 @@ def strict_schema(schema: type[BaseModel], allowed: Allowed | None = None) -> di
     enums. The answer is still validated against the full model afterwards.
     """
     allowed = allowed or {}
-    full = schema.model_json_schema()
+    full = TypeAdapter(schema).json_schema()
     definitions = full.pop("$defs", {})
 
     def simplify(node: Any) -> Any:
@@ -130,7 +133,10 @@ def strict_schema(schema: type[BaseModel], allowed: Allowed | None = None) -> di
             return node
         if "$ref" in node:
             return simplify(definitions[node["$ref"].rsplit("/", 1)[-1]])
-        out = {k: simplify(v) for k, v in node.items() if k not in ("default", "title")}
+        dropped = ("default", "title", "discriminator")
+        out = {k: simplify(v) for k, v in node.items() if k not in dropped}
+        if "oneOf" in out:  # a discriminated union: exactly one variant matches either way
+            out["anyOf"] = out.pop("oneOf")
         if "const" in out:
             out["enum"] = [out.pop("const")]
         if "properties" in out:

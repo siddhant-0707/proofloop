@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from proofloop.world import Grid, HazardLayer, Shelter, World
+from proofloop.world import Community, Grid, HazardLayer, Shelter, World
 
 
 def save_world(world: World, path: Path) -> None:
@@ -16,6 +16,8 @@ def save_world(world: World, path: Path) -> None:
         "method": world.hazard.method,
         "reach_cells": world.reach_cells,
         "shelters": [asdict(s) for s in world.shelters],
+        "communities": [asdict(c) for c in world.communities],
+        "transport_cost_per_seat": world.transport_cost_per_seat,
     }
     arrays: dict[str, Any] = {
         "latitude": world.grid.latitude,
@@ -44,4 +46,8 @@ def load_world(path: Path) -> World:
             population=data["population"],
             shelters=tuple(Shelter(**s) for s in meta["shelters"]),
             reach_cells=meta["reach_cells"],
+            communities=tuple(Community(**c) for c in meta.get("communities", [])),
+            transport_cost_per_seat=meta.get(
+                "transport_cost_per_seat", World.transport_cost_per_seat
+            ),
         )

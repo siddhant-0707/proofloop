@@ -7,28 +7,24 @@ import {
   streamLoop,
   type AgentCall,
   type AgentKind,
-  type Plan,
   type Round,
   type SimulationResult,
   type Transcript,
 } from "@/lib/api";
+import { describeAttack, describeDamage, describePlan, type PlaceName } from "@/lib/describe";
 
 const people = (n: number) => Math.round(n).toLocaleString();
 const dollars = (n: number) => `$${Math.round(n).toLocaleString()}`;
-const shelterIds = (plan: Plan) => [...new Set(plan.actions.map((a) => a.shelter_id))];
 
-// Shelter id -> display name; falls back to the id until shelters load.
-const ShelterNames = createContext<Record<string, string>>({});
+// Shelter or community id -> display name; falls back to the id until places load.
+const PlaceNames = createContext<Record<string, string>>({});
 
-function useShelterName() {
-  const names = useContext(ShelterNames);
+function usePlaceName(): PlaceName {
+  const names = useContext(PlaceNames);
   return (id: string) => names[id] ?? id;
 }
 
-function useShelterList() {
-  const name = useShelterName();
-  return (ids: string[]) => (ids.length ? ids.map(name).join(", ") : "none");
-}
+const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 export default function RoundsPanel() {
   const [agents, setAgents] = useState<AgentKind>("gemma");
@@ -43,7 +39,9 @@ export default function RoundsPanel() {
 
   useEffect(() => {
     fetchExposure()
-      .then((e) => setNames(Object.fromEntries(e.shelters.map((s) => [s.id, s.name]))))
+      .then((e) =>
+        setNames(Object.fromEntries([...e.shelters, ...e.communities].map((p) => [p.id, p.name]))),
+      )
       .catch(() => {});
     return () => abort.current?.abort();
   }, []);
@@ -79,8 +77,8 @@ export default function RoundsPanel() {
   const idle = !running && !transcript && !error;
 
   return (
-    <ShelterNames.Provider value={names}>
-      <section className="flex h-full flex-col gap-3">
+    <PlaceNames.Provider value={names}>
+      <section className="flex h-full min-h-0 flex-col gap-3">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-slate-900">Stress test</h2>
@@ -115,7 +113,7 @@ export default function RoundsPanel() {
         )}
 
         {(rounds.length > 0 || running) && (
-          <ol className="flex flex-col gap-3 overflow-y-auto pb-1">
+          <ol className="flex min-h-0 flex-col gap-3 overflow-y-auto pb-1">
             {rounds.map((round) => (
               <RoundCard
                 key={round.index}
@@ -140,7 +138,7 @@ export default function RoundsPanel() {
           </ol>
         )}
       </section>
-    </ShelterNames.Provider>
+    </PlaceNames.Provider>
   );
 }
 
@@ -180,8 +178,7 @@ function Progress({
 }
 
 function RoundCard({ round, recommended }: { round: Round; recommended: boolean }) {
-  const shelterList = useShelterList();
-  const shelterName = useShelterName();
+  const name = usePlaceName();
   const failed = round.verdict?.checks.filter((c) => !c.passed) ?? [];
   return (
     <li className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
@@ -198,14 +195,14 @@ function RoundCard({ round, recommended }: { round: Round; recommended: boolean 
         </div>
       </div>
       <p className="mt-1 text-xs text-slate-500">
-        Offline going in: {shelterList(round.scenario.offline_shelters)}
+        Going in: {describeDamage(round.scenario, name)} · budget {dollars(round.scenario.budget)}
       </p>
 
       {round.planner_error && <ErrorLine label="Planner" message={round.planner_error} />}
       {round.plan && (
         <p className="mt-2 text-sm text-slate-700">
-          <span className="font-medium text-slate-900">Plan:</span> open shelters{" "}
-          {shelterList(shelterIds(round.plan))}
+          <span className="font-medium text-slate-900">Plan:</span>{" "}
+          {describePlan(round.plan.actions, name)}
         </p>
       )}
       {round.result && <Score result={round.result} />}
@@ -228,8 +225,8 @@ function RoundCard({ round, recommended }: { round: Round; recommended: boolean 
       {round.attack && (
         <div className="mt-2 border-t border-slate-100 pt-2">
           <p className="text-xs text-amber-700">
-            <span className="font-medium">Attack:</span> {shelterName(round.attack.shelter_id)}{" "}
-            goes offline
+            <span className="font-medium">Attack:</span>{" "}
+            {sentence(describeAttack(round.attack, name))}
           </p>
           {round.attack.rationale && (
             <p className="mt-1 text-xs leading-relaxed text-slate-600">{round.attack.rationale}</p>
@@ -308,6 +305,12 @@ function Score({ result }: { result: SimulationResult }) {
           {pct}% · {dollars(result.cost)}
         </span>
       </div>
+      {result.unfunded_actions > 0 && (
+        <p className="mt-1 text-xs text-amber-700">
+          {result.unfunded_actions} action{result.unfunded_actions === 1 ? "" : "s"} left without
+          money by the budget
+        </p>
+      )}
       <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-100">
         <div className="h-full rounded-full bg-slate-900" style={{ width: `${pct}%` }} />
       </div>
@@ -316,7 +319,7 @@ function Score({ result }: { result: SimulationResult }) {
 }
 
 function FinalAttack({ transcript }: { transcript: Transcript }) {
-  const shelterName = useShelterName();
+  const name = usePlaceName();
   if (transcript.final_adversary_error) {
     return <ErrorLine label="Adversary" message={transcript.final_adversary_error} />;
   }
@@ -324,7 +327,7 @@ function FinalAttack({ transcript }: { transcript: Transcript }) {
   return (
     <li className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-800">
       <span className="font-semibold">Final attack:</span>{" "}
-      {shelterName(transcript.final_attack.shelter_id)} goes offline. No plan gets to answer it.
+      {sentence(describeAttack(transcript.final_attack, name))}. No plan gets to answer it.
       {transcript.final_attack.rationale && (
         <p className="mt-1 text-xs leading-relaxed text-amber-900/80">
           {transcript.final_attack.rationale}
@@ -338,16 +341,16 @@ function FinalAttack({ transcript }: { transcript: Transcript }) {
 }
 
 function Recommendation({ transcript }: { transcript: Transcript }) {
-  const shelterList = useShelterList();
+  const name = usePlaceName();
   const rec = transcript.recommendation;
   return (
     <li className="rounded-xl bg-slate-900 p-3.5 text-white">
       <h3 className="text-sm font-semibold">Recommendation</h3>
       {rec ? (
         <p className="mt-1 text-sm text-slate-200">
-          Round {rec.round_index + 1}&apos;s plan (open {shelterList(shelterIds(rec.plan))}) holds
-          up best with every attack applied (offline:{" "}
-          {shelterList(transcript.final_scenario.offline_shelters)}):{" "}
+          Round {rec.round_index + 1}&apos;s plan ({describePlan(rec.plan.actions, name)}) holds
+          up best with every attack applied ({describeDamage(transcript.final_scenario, name)};
+          budget {dollars(transcript.final_scenario.budget)}):{" "}
           {people(rec.result.people_sheltered)} of {people(rec.result.people_affected)} people
           sheltered.
         </p>

@@ -1,8 +1,8 @@
 """Plan, Attack, Scenario and Transcript: the Loop's contract with agents and the web app."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 
 class _Model(BaseModel):
@@ -12,9 +12,18 @@ class _Model(BaseModel):
 class Scenario(_Model):
     budget: float = Field(ge=0)
     offline_shelters: frozenset[str] = frozenset()
+    # Communities whose land access is cut: their people cannot reach a shelter on their own.
+    closed_communities: frozenset[str] = frozenset()
 
     def with_offline(self, shelter_id: str) -> "Scenario":
         return self.model_copy(update={"offline_shelters": self.offline_shelters | {shelter_id}})
+
+    def with_closed(self, community_id: str) -> "Scenario":
+        closed = self.closed_communities | {community_id}
+        return self.model_copy(update={"closed_communities": closed})
+
+    def with_budget_cut(self, percent: float) -> "Scenario":
+        return self.model_copy(update={"budget": self.budget * (1 - percent / 100)})
 
 
 class OpenShelter(_Model):
@@ -22,7 +31,23 @@ class OpenShelter(_Model):
     shelter_id: str
 
 
-Action = OpenShelter
+class StageTransport(_Model):
+    """High-water vehicles that carry a community's people to open shelters with room."""
+
+    type: Literal["stage_transport"] = "stage_transport"
+    community_id: str
+    seats: int = Field(ge=1, le=5_000)
+
+
+class AllocateBudget(_Model):
+    """Money held back; a later budget cut takes it before any action loses funding."""
+
+    type: Literal["allocate_budget"] = "allocate_budget"
+    category: Literal["contingency_reserve"] = "contingency_reserve"
+    amount: float = Field(ge=1_000)
+
+
+Action = Annotated[OpenShelter | StageTransport | AllocateBudget, Field(discriminator="type")]
 
 
 class Claims(_Model):
@@ -39,7 +64,14 @@ class Plan(_Model):
     @property
     def shelter_ids(self) -> list[str]:
         """Shelters the plan opens, in plan order, without repeats."""
-        return list(dict.fromkeys(action.shelter_id for action in self.actions))
+        return list(dict.fromkeys(a.shelter_id for a in self.actions if isinstance(a, OpenShelter)))
+
+    @property
+    def community_ids(self) -> list[str]:
+        """Communities the plan stages transport for, in plan order, without repeats."""
+        return list(
+            dict.fromkeys(a.community_id for a in self.actions if isinstance(a, StageTransport))
+        )
 
 
 class ShelterOffline(_Model):
@@ -49,7 +81,20 @@ class ShelterOffline(_Model):
     shelter_id: str
 
 
-Attack = ShelterOffline
+class RoadClosed(_Model):
+    rationale: str = Field(default="", max_length=400)
+    type: Literal["road_closed"] = "road_closed"
+    community_id: str
+
+
+class BudgetCut(_Model):
+    rationale: str = Field(default="", max_length=400)
+    type: Literal["budget_cut"] = "budget_cut"
+    percent: float = Field(ge=10, le=50)
+
+
+Attack = Annotated[ShelterOffline | RoadClosed | BudgetCut, Field(discriminator="type")]
+ATTACK = TypeAdapter(Attack)
 
 
 class SimulationResult(_Model):
@@ -58,6 +103,8 @@ class SimulationResult(_Model):
     people_unreached: float
     cost: float
     robustness: float
+    # Actions left without money after a budget cut, in plan order.
+    unfunded_actions: int = 0
 
 
 class Check(_Model):

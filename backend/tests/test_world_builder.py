@@ -1,5 +1,6 @@
 """World builder seam: NISAR granules for a bounding box -> World (and its cache)."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -8,15 +9,17 @@ from gcov_files import CENTER_LAT, CENTER_LON, SCENE_BBOX, center_patch, write_g
 from sme2_files import one_cell, write_sme2
 
 from proofloop.exposure.census import Block
+from proofloop.exposure.communities import CommunitySite
 from proofloop.exposure.shelters import ShelterSite
 from proofloop.nisar.gcov import read_gcov, write_gcov_crop
 from proofloop.nisar.sme2 import BBox
-from proofloop.world import FloodKind, Grid, HazardLayer, World
+from proofloop.world import Community, FloodKind, Grid, HazardLayer, World
 from proofloop.world.builder import (
     GranulePair,
     build_world,
     build_world_from_gcov,
     build_world_from_sme2,
+    with_communities,
     with_exposure,
 )
 from proofloop.world.store import load_world, save_world
@@ -421,3 +424,31 @@ def test_a_cached_world_loads_without_the_source_granules(tmp_path):
     assert loaded.hazard.kind is None
     assert loaded.shelters == built.shelters
     assert loaded.reach_cells == built.reach_cells
+
+
+def test_communities_are_placed_on_the_grid_with_a_radius_in_cells():
+    # Cells are 0.1 degrees of latitude, about 11.1 km; a 22.3 km radius is 2 cells.
+    town = CommunitySite("town", "Town", latitude=29.75, longitude=-83.85, radius_m=22_264)
+
+    world = with_communities(_dry_world(), [town])
+
+    assert world.communities == (Community(id="town", name="Town", row=2, col=1, radius_cells=2),)
+
+
+def test_a_community_off_the_grid_is_an_error():
+    far = CommunitySite("far", "Far", latitude=25.0, longitude=-80.0, radius_m=4_000)
+
+    with pytest.raises(ValueError, match="far .* is off the grid"):
+        with_communities(_dry_world(), [far])
+
+
+def test_a_cached_world_keeps_its_communities_and_transport_price(tmp_path):
+    town = CommunitySite("town", "Town", latitude=29.75, longitude=-83.85, radius_m=22_264)
+    built = replace(with_communities(_dry_world(), [town]), transport_cost_per_seat=175.0)
+    cache = tmp_path / "world.npz"
+
+    save_world(built, cache)
+    loaded = load_world(cache)
+
+    assert loaded.communities == built.communities
+    assert loaded.transport_cost_per_seat == 175.0

@@ -75,3 +75,25 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
   - **No full download needed:** a granule that isn't downloaded is read in place with HTTP range requests (h5py over a seekable file object) and cropped to the Big Bend. Each frame 17 crop fetched about 290 MB in under 2 minutes, instead of 6.5 GB, and is cached in `data/raw/nisar/crops`.
   - **Result:** 33,965 cells flagged (33,154 under canopy, 811 open water), 960 people in flagged cells. Flagged share by 0.05° latitude band stays between 3.4% and 7.7% with no step at the frame seam (about 29.9 to 30.05° N). Perry 3.7% flagged (171 people), Keaton Beach 1.3%, now covered. All four shelters sit on dry cells.
   - **Loop:** the Perry shelters now matter. The first plan opens Ruth Raines MS and Taylor County HS and shelters 959.5 of 960 affected people; after the Adversary knocks out both Perry shelters and then Ruth Raines, the recommendation shelters about 450.
+
+## Action and attack menus (#7)
+
+Agreed on 2026-10-24.
+
+- **Communities** are the unit for transport and road closures: Keaton Beach, Steinhatchee, Horseshoe Beach, Suwannee, Cross City and Perry.
+  Each is an approximate town center with a 4 km radius (a planning assumption).
+  Affected people per community on the frame 16 and 17 GCOV mosaic: Perry 300, Cross City 205, Steinhatchee 64, Suwannee 14, Keaton Beach 6, Horseshoe Beach 2.
+- **Actions:** open shelter; stage transport (community, seats); allocate budget (contingency reserve, at least $1,000).
+  - Transport carries a community's remaining affected people, nearest to its center first, into open shelters that still have beds, even when its road is closed.
+    It costs $150 per seat (an assumption).
+  - Actions are funded in plan order until the first one the budget cannot cover; it and every later action lose their money.
+    The reserve is held back, not spent, so after a budget cut it is used up before any action loses funding.
+    In the Simulation this is the same as leaving money unspent: the reserve records a deliberate choice to keep money in hand.
+  - A shelter opened twice is paid for once.
+- **Attacks:** shelter offline; road closed (community), which cuts a community off from shelters outside it but not from a shelter inside it; budget cut (10 to 50%).
+  Known limitation: a closed road does not yet stop people from elsewhere walking through the community or into a shelter inside it.
+- **Every attack has a planned counter:** redundant shelters against an offline shelter, transport against a closed road, a reserve against a budget cut.
+- **Target outreach moved to #8,** where it means reaching people flooded outside FEMA zones; in #7 it would have needed an unsourced evacuation-compliance rate.
+- **Gemma:** the draft check lists the exact cost of each action, because Gemma copied totals well but added them badly.
+  Transport is only offered for communities with affected people.
+  On the Gemini API fallback, Gemma loops on the Attack union with a rationale, so OpenRouter is effectively the only working provider for the full menus.
