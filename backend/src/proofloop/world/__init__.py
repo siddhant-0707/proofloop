@@ -60,6 +60,10 @@ class Community:
         rows, cols = np.ogrid[: shape[0], : shape[1]]
         return (rows - self.row) ** 2 + (cols - self.col) ** 2 <= self.radius_cells**2
 
+    def contains(self, row: int, col: int) -> bool:
+        """Whether the cell is within the radius, as `mask` counts it."""
+        return (row - self.row) ** 2 + (col - self.col) ** 2 <= self.radius_cells**2
+
 
 # Compared and hashed by identity, so per-World results (shelter reachability) can be cached.
 @dataclass(frozen=True, eq=False)

@@ -11,6 +11,10 @@ const NAMES: Record<string, string> = {
   steinhatchee: "Steinhatchee",
 };
 const name = (id: string) => NAMES[id] ?? id;
+const places = {
+  name,
+  sheltersIn: { perry: ["taylor-county-hs"], "cross-city": ["ruth-raines-ms"] },
+};
 
 function neighborhood(
   community_id: string | null,
@@ -96,7 +100,7 @@ function verifiedRound(): Round {
 
 describe("a verified round", () => {
   it("first shows the Planner's shelters opening and people heading to them", () => {
-    const [plan] = roundBeats(verifiedRound(), name);
+    const [plan] = roundBeats(verifiedRound(), places);
 
     expect(plan.kind).toBe("plan");
     expect(plan.round).toBe(1);
@@ -108,10 +112,12 @@ describe("a verified round", () => {
       "taylor-county-hs": "open",
     });
     expect(plan.arcs).toEqual([
-      { from: "perry", to: "taylor-county-hs", people: 299.56, carried: 0 },
-      { from: "cross-city", to: "ruth-raines-ms", people: 204.52, carried: 0 },
-      { from: "steinhatchee", to: "ruth-raines-ms", people: 63.84, carried: 40 },
+      { from: "perry", to: "taylor-county-hs", people: 299.56, carried: 0, broken: false },
+      { from: "cross-city", to: "ruth-raines-ms", people: 204.52, carried: 0, broken: false },
+      { from: "steinhatchee", to: "ruth-raines-ms", people: 63.84, carried: 40, broken: false },
     ]);
+    expect(plan.cutTowns).toEqual([]);
+    expect(plan.unreached).toEqual({});
     expect(plan.figures).toEqual({
       atRisk: 959.68,
       sheltered: 959.51,
@@ -128,7 +134,7 @@ describe("a verified round", () => {
       { type: "allocate_budget", category: "contingency_reserve", amount: 5_000 },
     );
 
-    const [plan] = roundBeats(round, name);
+    const [plan] = roundBeats(round, places);
 
     expect(plan.caption).toBe(
       "Round 1 · Planner: open Ruth Raines Middle School and Taylor County High School, " +
@@ -140,7 +146,7 @@ describe("a verified round", () => {
 
 describe("the Verifier's verdict", () => {
   it("follows the plan and says the claims check out", () => {
-    const [plan, verdict] = roundBeats(verifiedRound(), name);
+    const [plan, verdict] = roundBeats(verifiedRound(), places);
 
     expect(verdict.kind).toBe("verdict");
     expect(verdict.verdict).toEqual({ passed: true, reason: "Claims match the simulation" });
@@ -167,7 +173,7 @@ describe("the Verifier's verdict", () => {
       ],
     };
 
-    const verdict = roundBeats(round, name)[1];
+    const verdict = roundBeats(round, places)[1];
 
     expect(verdict.verdict).toEqual({
       passed: false,
@@ -192,13 +198,15 @@ describe("a round where the Planner failed", () => {
       planner_error: "GenerationFailed: openrouter: invalid answer",
     });
 
-    expect(roundBeats(round, name)).toEqual([
+    expect(roundBeats(round, places)).toEqual([
       {
         kind: "note",
         round: 1,
         caption: "Round 1 · The Planner could not produce a valid plan",
         shelters: {},
         arcs: [],
+        cutTowns: [],
+        unreached: {},
         figures: null,
       },
     ]);
@@ -207,11 +215,111 @@ describe("a round where the Planner failed", () => {
   it("says which earlier plan it tests again", () => {
     const round = { ...verifiedRound(), index: 1, plan_from_round: 0, planner_error: "invalid" };
 
-    const [plan] = roundBeats(round, name);
+    const [plan] = roundBeats(round, places);
 
     expect(plan.caption).toBe(
       "Round 2 · The Planner's answer was invalid; testing the round 1 plan again",
     );
     expect(plan.shelters).toEqual({ "ruth-raines-ms": "open", "taylor-county-hs": "open" });
+  });
+});
+
+describe("the Adversary's attack", () => {
+  it("strikes a shelter: it goes offline and the people heading there are no longer reached", () => {
+    const [, , attack] = roundBeats(verifiedRound(), places);
+
+    expect(attack.kind).toBe("attack");
+    expect(attack.caption).toBe(
+      "Round 1 · Adversary: Taylor County High School goes offline, 453 of 960 people sheltered",
+    );
+    expect(attack.shelters).toEqual({ "ruth-raines-ms": "open", "taylor-county-hs": "offline" });
+    expect(attack.arcs.map((a) => [a.from, a.broken])).toEqual([
+      ["perry", true],
+      ["cross-city", false],
+      ["steinhatchee", false],
+    ]);
+    expect(attack.unreached).toEqual({ perry: 299.56 });
+    expect(attack.figures).toEqual({
+      atRisk: 959.68,
+      sheltered: 453.13,
+      shelteredBefore: 959.51,
+      budgetUsed: 116_850,
+      budget: 150_000,
+      reserve: 0,
+    });
+  });
+
+  it("closes a road: the town is cut off from shelters outside it, but transport still runs", () => {
+    const round = verifiedRound();
+    round.attack = { rationale: "", type: "road_closed", community_id: "steinhatchee" };
+    round.attacked = { ...round.result!, people_sheltered: 935.67, people_unreached: 24.01 };
+
+    const attack = roundBeats(round, places)[2];
+
+    expect(attack.caption).toBe(
+      "Round 1 · Adversary: the road into Steinhatchee closes, 936 of 960 people sheltered",
+    );
+    expect(attack.cutTowns).toEqual(["steinhatchee"]);
+    expect(attack.shelters).toEqual({ "ruth-raines-ms": "open", "taylor-county-hs": "open" });
+    expect(attack.arcs.filter((a) => a.broken).map((a) => a.from)).toEqual(["steinhatchee"]);
+    expect(attack.unreached).toEqual({ steinhatchee: 63.84 - 40 });
+  });
+
+  it("closes a road into a town with its own shelter: nobody there is cut off", () => {
+    const round = verifiedRound();
+    round.attack = { rationale: "", type: "road_closed", community_id: "perry" };
+
+    const attack = roundBeats(round, places)[2];
+
+    expect(attack.cutTowns).toEqual(["perry"]);
+    expect(attack.arcs.some((a) => a.broken)).toBe(false);
+    expect(attack.unreached).toEqual({});
+  });
+
+  it("cuts the budget: the last actions lose their money and their shelters go dark", () => {
+    const round = verifiedRound();
+    round.plan!.actions.push({ type: "allocate_budget", category: "contingency_reserve", amount: 5_000 });
+    round.attack = { rationale: "", type: "budget_cut", percent: 25 };
+    round.attacked = { ...round.result!, people_sheltered: 453.13, unfunded_actions: 1 };
+
+    const attack = roundBeats(round, places)[2];
+
+    expect(attack.caption).toBe(
+      "Round 1 · Adversary: the budget is cut by 25%, 453 of 960 people sheltered",
+    );
+    expect(attack.shelters).toEqual({ "ruth-raines-ms": "open", "taylor-county-hs": "unfunded" });
+    expect(attack.unreached).toEqual({ perry: 299.56 });
+    expect(attack.figures).toMatchObject({ budget: 112_500, sheltered: 453.13, shelteredBefore: 959.51 });
+  });
+
+  it("is left out of a re-plan's last round, which has no attack", () => {
+    const round = { ...verifiedRound(), attack: null, attacked: null };
+
+    expect(roundBeats(round, places).map((b) => b.kind)).toEqual(["plan", "verdict"]);
+  });
+
+  it("lets funded transport riders through: buses fill spare beds in any open shelter", () => {
+    const round = verifiedRound();
+    round.plan!.actions.push({ type: "stage_transport", community_id: "steinhatchee", seats: 40 });
+    round.attack = { rationale: "", type: "shelter_offline", shelter_id: "ruth-raines-ms" };
+
+    const attack = roundBeats(round, places)[2];
+
+    expect(attack.unreached).toEqual({ "cross-city": 204.52, steinhatchee: 63.84 - 40 });
+  });
+
+  it("loses only the riders whose seats lost their money", () => {
+    const round = verifiedRound();
+    round.plan!.actions.push(
+      { type: "stage_transport", community_id: "steinhatchee", seats: 30 },
+      { type: "stage_transport", community_id: "steinhatchee", seats: 10 },
+    );
+    round.attack = { rationale: "", type: "budget_cut", percent: 10 };
+    round.attacked = { ...round.result!, unfunded_actions: 1 };
+
+    const attack = roundBeats(round, places)[2];
+
+    expect(attack.shelters).toEqual({ "ruth-raines-ms": "open", "taylor-county-hs": "open" });
+    expect(attack.unreached).toEqual({ steinhatchee: 10 });
   });
 });

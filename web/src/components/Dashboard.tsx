@@ -47,11 +47,11 @@ function Screens() {
   // The run whose budget question was answered "keep the budget".
   const [kept, setKept] = useState<Transcript | null>(null);
   const { run, start, reset } = useLoopRun();
-  const { names } = usePlaces();
-  const beats = useMemo(
-    () => run.rounds.flatMap((r) => roundBeats(r, (id) => names[id] ?? id)),
-    [run.rounds, names],
-  );
+  const { names, sheltersIn } = usePlaces();
+  const beats = useMemo(() => {
+    const places = { name: (id: string) => names[id] ?? id, sheltersIn };
+    return run.rounds.flatMap((r) => roundBeats(r, places));
+  }, [run.rounds, names, sheltersIn]);
   const playback = usePlayback(beats, run.running, run.startedAt ?? 0);
   const [printing, setPrinting] = useState<{
     part: PrintPart;

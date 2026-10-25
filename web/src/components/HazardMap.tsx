@@ -126,6 +126,8 @@ export default function HazardMap({
   beatRef.current = beat;
   // The places the camera last framed for a beat, so repeated beats do not refit.
   const framedRef = useRef<string | undefined>(undefined);
+  // When the current beat appeared, so a strike plays once at its start.
+  const beatShownAt = useRef(0);
 
   useEffect(() => {
     let map: maplibregl.Map | null = null;
@@ -228,13 +230,15 @@ export default function HazardMap({
   }, [compact]);
 
   useEffect(() => {
+    beatShownAt.current = performance.now();
     const map = mapRef.current;
     if (map?.getSource(BEAT_ARCS) && exposureRef.current) {
       applyBeat(map, beat, exposureRef.current, framedRef);
     }
   }, [beat]);
 
-  // Arcs flow and opened shelters pulse while a beat is drawn.
+  // Arcs flow and opened shelters pulse while a beat is drawn; a shelter knocked offline sends
+  // out shock rings in red, then settles grey.
   const drawing = beat != null;
   useEffect(() => {
     if (!drawing) return;
@@ -246,7 +250,14 @@ export default function HazardMap({
       if (map?.getLayer("beat-arc-flow") && step !== last) {
         last = step;
         map.setPaintProperty("beat-arc-flow", "line-dasharray", DASHES[step]);
-        map.setPaintProperty("beat-rings", "circle-stroke-opacity", 0.55 + 0.45 * Math.sin(t / 260) ** 2);
+        const pulse = 0.55 + 0.45 * Math.sin(t / 260) ** 2;
+        map.setPaintProperty("beat-rings", "circle-stroke-opacity", ["case", OPEN, pulse, 0.9]);
+        const since = t - beatShownAt.current;
+        const striking = since < STRIKES * STRIKE_MS;
+        const k = (since % STRIKE_MS) / STRIKE_MS;
+        map.setPaintProperty("beat-strike", "circle-radius", 8 + 52 * k);
+        map.setPaintProperty("beat-strike", "circle-stroke-opacity", striking ? 0.9 * (1 - k) : 0);
+        map.setPaintProperty("beat-rings", "circle-stroke-color", ringColor(striking));
       }
       frame = requestAnimationFrame(tick);
     };
@@ -413,12 +424,34 @@ function fitPadding(element: HTMLElement, compact: boolean) {
 
 const BEAT_ARCS = "beat-arcs";
 const BEAT_SHELTERS = "beat-shelters";
+const BEAT_UNREACHED = "beat-unreached";
+const BEAT_CUT_RINGS = "beat-cut-rings";
 const ARC_COLOR = "#f59e0b";
 const TRANSPORT_ARC_COLOR = "#c084fc";
 const RING_COLOR = "#10b981";
+const ATTACK_COLOR = "#dc2626";
+const LOST_COLOR = "#64748b";
+const OPEN: ExpressionSpecification = ["==", ["get", "state"], "open"];
+// A struck shelter sends out this many shock rings, one every STRIKE_MS.
+const STRIKES = 2;
+const STRIKE_MS = 1400;
+
+/** Rings: open green, offline red while it is struck then grey, unfunded grey. */
+function ringColor(striking: boolean): ExpressionSpecification {
+  return [
+    "match",
+    ["get", "state"],
+    "open",
+    RING_COLOR,
+    "offline",
+    striking ? ATTACK_COLOR : LOST_COLOR,
+    LOST_COLOR,
+  ];
+}
+
 // Clear of the counter above and the caption bar below.
-const BEAT_PADDING = { top: 150, bottom: 160, left: 80, right: 80 };
-const NARROW_BEAT_PADDING = { top: 130, bottom: 150, left: 40, right: 40 };
+const BEAT_PADDING = { top: 190, bottom: 170, left: 80, right: 80 };
+const NARROW_BEAT_PADDING = { top: 160, bottom: 160, left: 40, right: 40 };
 // Dash and gap lengths, stepped each frame so the dashes run from town to shelter.
 const DASHES: number[][] = [
   [0, 4, 3],
@@ -442,6 +475,14 @@ function addBeatLayers(map: maplibregl.Map) {
   const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
   map.addSource(BEAT_ARCS, { type: "geojson", data: empty });
   map.addSource(BEAT_SHELTERS, { type: "geojson", data: empty });
+  map.addSource(BEAT_UNREACHED, { type: "geojson", data: empty });
+  map.addSource(BEAT_CUT_RINGS, { type: "geojson", data: empty });
+  map.addLayer({
+    id: "beat-cut-rings",
+    type: "line",
+    source: BEAT_CUT_RINGS,
+    paint: { "line-color": ATTACK_COLOR, "line-width": 3, "line-dasharray": [2, 1.5] },
+  });
   const width: ExpressionSpecification = [
     "interpolate",
     ["linear"],
@@ -454,18 +495,33 @@ function addBeatLayers(map: maplibregl.Map) {
     7,
   ];
   const color: ExpressionSpecification = ["case", [">", ["get", "carried"], 0], TRANSPORT_ARC_COLOR, ARC_COLOR];
+  const broken: ExpressionSpecification = ["get", "broken"];
   map.addLayer({
     id: "beat-arc-glow",
     type: "line",
     source: BEAT_ARCS,
     layout: { "line-cap": "round" },
-    paint: { "line-color": color, "line-width": ["*", width, 3], "line-opacity": 0.18, "line-blur": 4 },
+    paint: {
+      "line-color": ["case", broken, ATTACK_COLOR, color],
+      "line-width": ["*", width, 3],
+      "line-opacity": 0.18,
+      "line-blur": 4,
+    },
   });
   map.addLayer({
     id: "beat-arc-flow",
     type: "line",
     source: BEAT_ARCS,
+    filter: ["!", broken],
     paint: { "line-color": color, "line-width": width, "line-dasharray": DASHES[0] },
+  });
+  // People an attack stops: the arc stays, red and still.
+  map.addLayer({
+    id: "beat-arc-broken",
+    type: "line",
+    source: BEAT_ARCS,
+    filter: broken,
+    paint: { "line-color": ATTACK_COLOR, "line-width": width, "line-dasharray": [1, 1.5], "line-opacity": 0.85 },
   });
   map.addLayer({
     id: "beat-rings",
@@ -484,17 +540,62 @@ function addBeatLayers(map: maplibregl.Map) {
         13,
         ["*", ["sqrt", ["get", "capacity"]], 0.9],
       ],
-      "circle-color": RING_COLOR,
-      "circle-opacity": 0.16,
-      "circle-stroke-color": RING_COLOR,
+      "circle-color": ["case", OPEN, RING_COLOR, LOST_COLOR],
+      "circle-opacity": ["case", OPEN, 0.16, 0.3],
+      "circle-stroke-color": ringColor(true),
       "circle-stroke-width": 2.5,
     },
+  });
+  map.addLayer({
+    id: "beat-strike",
+    type: "circle",
+    source: BEAT_SHELTERS,
+    filter: ["==", ["get", "state"], "offline"],
+    paint: {
+      "circle-radius": 8,
+      "circle-color": "transparent",
+      "circle-stroke-color": ATTACK_COLOR,
+      "circle-stroke-width": 3,
+    },
+  });
+  map.addLayer({
+    id: "beat-shelter-states",
+    type: "symbol",
+    source: BEAT_SHELTERS,
+    filter: ["!", OPEN],
+    layout: {
+      "text-field": ["match", ["get", "state"], "offline", "OFFLINE", "NO FUNDS"],
+      "text-font": ["Montserrat Medium"],
+      "text-size": 12,
+      "text-letter-spacing": 0.08,
+      "text-offset": [0, -2.2],
+      "text-allow-overlap": true,
+    },
+    paint: {
+      "text-color": ["match", ["get", "state"], "offline", ATTACK_COLOR, LOST_COLOR],
+      "text-halo-color": "#ffffff",
+      "text-halo-width": 2,
+    },
+  });
+  map.addLayer({
+    id: "beat-unreached",
+    type: "symbol",
+    source: BEAT_UNREACHED,
+    layout: {
+      "text-field": ["get", "label"],
+      "text-font": ["Montserrat Medium"],
+      "text-size": 12,
+      "text-anchor": "top",
+      "text-offset": [0, 1.6],
+      "text-allow-overlap": true,
+    },
+    paint: { "text-color": ATTACK_COLOR, "text-halo-color": "#ffffff", "text-halo-width": 2 },
   });
   map.addLayer({
     id: "beat-arc-labels",
     type: "symbol",
     source: BEAT_ARCS,
-    filter: [">=", ["get", "people"], 5],
+    filter: ["all", [">=", ["get", "people"], 5], ["!", broken]],
     layout: {
       "symbol-placement": "line-center",
       "text-field": ["get", "label"],
@@ -520,32 +621,67 @@ function applyBeat(
     const town = towns.get(arc.from);
     const shelter = shelters.get(arc.to);
     if (!town || !shelter) return [];
+    const riders = arc.carried > 0 ? `, ${Math.round(arc.carried).toLocaleString()} by bus` : "";
     return [
       {
         type: "Feature" as const,
-        geometry: curve([town.longitude, town.latitude], [shelter.longitude, shelter.latitude]),
+        geometry: curve(lonLat(town), lonLat(shelter)),
         properties: {
           people: arc.people,
           carried: arc.carried,
-          label: `${Math.round(arc.people).toLocaleString()} people${arc.carried > 0 ? `, ${Math.round(arc.carried).toLocaleString()} by bus` : ""}`,
+          broken: arc.broken,
+          label: `${Math.round(arc.people).toLocaleString()} people${riders}`,
         },
       },
     ];
   });
-  const opened = Object.keys(beat?.shelters ?? {}).flatMap((id) => {
+  const opened = Object.entries(beat?.shelters ?? {}).flatMap(([id, state]) => {
     const s = shelters.get(id);
-    return s ? [{ lon: s.longitude, lat: s.latitude, props: { id, capacity: s.capacity } }] : [];
+    return s ? [{ place: s, state }] : [];
+  });
+  const cut = (beat?.cutTowns ?? []).flatMap((id) => towns.get(id) ?? []);
+  const unreached = Object.entries(beat?.unreached ?? {}).flatMap(([id, people]) => {
+    const town = towns.get(id);
+    const label = `${Math.round(people).toLocaleString()} not reached`;
+    return town ? [{ lon: town.longitude, lat: town.latitude, props: { label } }] : [];
   });
   (map.getSource(BEAT_ARCS) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: arcs });
-  (map.getSource(BEAT_SHELTERS) as maplibregl.GeoJSONSource).setData(points(opened));
+  (map.getSource(BEAT_SHELTERS) as maplibregl.GeoJSONSource).setData(
+    points(
+      opened.map(({ place, state }) => ({
+        lon: place.longitude,
+        lat: place.latitude,
+        props: { id: place.id, state, capacity: place.capacity },
+      })),
+    ),
+  );
+  (map.getSource(BEAT_UNREACHED) as maplibregl.GeoJSONSource).setData(points(unreached));
+  const rings = cut.map((town) => ring(lonLat(town), town.radius_km));
+  (map.getSource(BEAT_CUT_RINGS) as maplibregl.GeoJSONSource).setData({
+    type: "FeatureCollection",
+    features: rings.map((geometry) => ({ type: "Feature", properties: {}, geometry })),
+  });
 
-  const focus = [
-    ...opened.map((p) => [p.lon, p.lat] as [number, number]),
+  // A cut town is framed by its whole ring.
+  const ringPoints = rings.flatMap((r) => r.coordinates as [number, number][]);
+  const all = [
+    ...opened.map(({ place }) => lonLat(place)),
+    ...ringPoints,
     ...(beat?.arcs ?? []).flatMap((a) => {
       const town = towns.get(a.from);
-      return town ? [[town.longitude, town.latitude] as [number, number]] : [];
+      return town ? [lonLat(town)] : [];
     }),
   ];
+  // An attack beat moves in on what it hit: the shelters lost, the towns cut off and both ends
+  // of every arc it broke.
+  const hit = [
+    ...opened.filter(({ state }) => state !== "open").map(({ place }) => lonLat(place)),
+    ...ringPoints,
+    ...(beat?.arcs ?? [])
+      .filter((a) => a.broken)
+      .flatMap((a) => [towns.get(a.from), shelters.get(a.to)].flatMap((p) => (p ? [lonLat(p)] : []))),
+  ];
+  const focus = beat?.kind === "attack" && hit.length ? hit : all;
   if (!beat) framed.current = undefined;
   if (focus.length === 0) return;
   const key = focus.map((p) => p.join()).sort().join(";");
@@ -557,6 +693,23 @@ function applyBeat(
   );
   const padding = map.getContainer().clientWidth < 640 ? NARROW_BEAT_PADDING : BEAT_PADDING;
   map.fitBounds(bounds, { padding, maxZoom: 11, duration: 1600 });
+}
+
+function lonLat(place: { longitude: number; latitude: number }): [number, number] {
+  return [place.longitude, place.latitude];
+}
+
+/** A circle of `km` around `center`, as a closed line. */
+function ring(center: [number, number], km: number): GeoJSON.LineString {
+  const [lon, lat] = center;
+  const dLat = km / 111.32;
+  const dLon = dLat / Math.cos((lat * Math.PI) / 180);
+  const coordinates: [number, number][] = [];
+  for (let i = 0; i <= 64; i++) {
+    const a = (i / 64) * 2 * Math.PI;
+    coordinates.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]);
+  }
+  return { type: "LineString", coordinates };
 }
 
 /** A gentle arc from `a` to `b`, bowed to the left of travel. */
@@ -840,6 +993,19 @@ function addLayers(
   });
 
   if (exposure) addShelters(map, exposure, popups);
+  // Over the shelter's own dot: a shelter a beat's attack took out is drawn grey.
+  map.addLayer({
+    id: "beat-lost-dots",
+    type: "circle",
+    source: BEAT_SHELTERS,
+    filter: ["!", OPEN],
+    paint: {
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 5, 14, 9],
+      "circle-color": LOST_COLOR,
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 2,
+    },
+  });
   // Shelters first: the topmost layer under the pointer wins.
   showPopups(map, popups.reverse());
 }
