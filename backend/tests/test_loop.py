@@ -1,56 +1,14 @@
 """Loop seam: run_proofloop(world, scenario, planner, adversary) -> Transcript.
 
-Worlds are drawn as small maps:
-    ~  flooded cell holding `pop` affected people
-    .  dry, passable cell
-    A-Z shelter on a dry cell
+Worlds are drawn as small maps; see loop_worlds.
 """
 
 from dataclasses import replace
 
-import numpy as np
+from loop_worlds import offline, open_plan, open_shelter, plan, reserve, world_from_map
 
 from proofloop.loop import AgentReply, ScriptedAdversary, ScriptedPlanner, run_proofloop
 from proofloop.loop.schemas import Scenario
-from proofloop.world import Grid, HazardLayer, Shelter, World
-
-
-def world_from_map(rows: list[str], pop: float = 10.0, shelters=None) -> World:
-    """shelters maps a letter to (capacity, cost)."""
-    shelters = shelters or {}
-    flooded = np.array([[ch == "~" for ch in row] for row in rows])
-    n_rows, n_cols = flooded.shape
-    return World(
-        grid=Grid(
-            latitude=np.linspace(30.0, 29.9, n_rows),
-            longitude=np.linspace(-83.5, -83.4, n_cols),
-        ),
-        hazard=HazardLayer(
-            flooded=flooded,
-            confidence=np.where(flooded, 1.0, 0.0),
-            method="hand-built",
-        ),
-        population=np.where(flooded, pop, 0.0),
-        shelters=tuple(
-            Shelter(id=ch, name=f"Shelter {ch}", row=r, col=c, capacity=cap, cost=cost)
-            for r, row in enumerate(rows)
-            for c, ch in enumerate(row)
-            if ch in shelters
-            for cap, cost in [shelters[ch]]
-        ),
-    )
-
-
-def open_plan(*shelter_ids: str, cost: float, sheltered: float) -> dict:
-    return {
-        "actions": [{"type": "open_shelter", "shelter_id": s} for s in shelter_ids],
-        "claims": {"cost": cost, "people_sheltered": sheltered},
-        "rationale": "test plan",
-    }
-
-
-def offline(shelter_id: str) -> dict:
-    return {"type": "shelter_offline", "shelter_id": shelter_id}
 
 
 def test_plan_shelters_affected_people_up_to_shelter_capacity():
@@ -190,7 +148,9 @@ def test_a_plan_over_budget_fails_verification():
         rounds=1,
     )
 
-    assert failed_checks(transcript) == ["budget"]
+    # The shelter cannot be funded, so it shelters nobody and the claim fails too.
+    assert failed_checks(transcript) == ["people_sheltered", "budget"]
+    assert transcript.rounds[0].result.unfunded_actions == 1
 
 
 def test_a_plan_claiming_more_than_its_shelters_can_hold_fails_capacity():
@@ -220,7 +180,7 @@ def test_a_plan_opening_an_unknown_or_offline_shelter_fails_verification():
     )
 
     shelter_checks = [
-        c for c in transcript.rounds[0].verdict.checks if c.name == "shelters_available"
+        c for c in transcript.rounds[0].verdict.checks if c.name == "places_available"
     ]
     assert [(c.passed, c.reason) for c in shelter_checks] == [
         (False, "shelter B is offline; unknown shelter Z")
@@ -350,8 +310,13 @@ def test_the_final_attack_lands_after_the_last_round_and_is_reported_separately(
         rounds=2,
     )
 
-    assert [r.attack.shelter_id if r.attack else None for r in transcript.rounds] == ["A", None]
-    assert transcript.final_attack.shelter_id == "B"
+    assert [
+        r.attack.model_dump().get("shelter_id") if r.attack else None for r in transcript.rounds
+    ] == [
+        "A",
+        None,
+    ]
+    assert transcript.final_attack.model_dump()["shelter_id"] == "B"
     assert transcript.final_scenario.offline_shelters == {"A", "B"}
     assert transcript.recommendation.result.people_sheltered == 0
 
@@ -435,12 +400,14 @@ def test_keeps_the_adversarys_reason_for_each_attack():
 
 
 def test_verifier_reasons_read_as_money_and_whole_people():
-    world = world_from_map(["~.A"], pop=2.27294, shelters={"A": (10, 166_350)})
+    world = world_from_map(["~.A"], pop=2.27294, shelters={"A": (10, 100)})
+    # The reserve is held back, not spent, so shelter A stays funded despite the overspend.
+    overspent = plan(open_shelter("A"), reserve(166_250), cost=166_350, sheltered=4)
 
     transcript = run_proofloop(
         world,
         Scenario(budget=150_000),
-        ScriptedPlanner([open_plan("A", cost=166_350, sheltered=4)]),
+        ScriptedPlanner([overspent]),
         ScriptedAdversary([offline("A")]),
         rounds=1,
     )

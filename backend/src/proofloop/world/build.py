@@ -7,11 +7,12 @@ uv run python -m proofloop.world.build
 """
 
 from proofloop.exposure.census import block_files, download_blocks, load_blocks
+from proofloop.exposure.communities import COMMUNITY_SITES
 from proofloop.exposure.shelters import SHELTER_SITES
 from proofloop.nisar.manifest import GRANULES, Product
 from proofloop.nisar.sme2 import BBox
 from proofloop.paths import RAW_NISAR_DIR, WORLD_CACHE
-from proofloop.world.builder import GranulePair, build_world, with_exposure
+from proofloop.world.builder import GranulePair, build_world, with_communities, with_exposure
 from proofloop.world.store import save_world
 
 # Dixie County and coastal Taylor County inside track 148 frame 16, plus Perry to the
@@ -35,13 +36,15 @@ def main() -> None:
     blocks = [block for path in block_files() for block in load_blocks(path)]
 
     world = with_exposure(build_world(BIG_BEND, sme2, gcov), blocks, SHELTER_SITES)
+    world = with_communities(world, COMMUNITY_SITES)
     save_world(world, WORLD_CACHE)
     rows, cols = world.grid.shape
     affected = world.population[world.hazard.flooded].sum()
     print(
         f"wrote {WORLD_CACHE} ({world.hazard.method}, {rows}x{cols} cells, "
         f"{int(world.hazard.flooded.sum())} flagged, {world.population.sum():,.0f} people, "
-        f"{affected:,.0f} in flagged cells, {len(world.shelters)} shelters)"
+        f"{affected:,.0f} in flagged cells, {len(world.shelters)} shelters, "
+        f"{len(world.communities)} communities)"
     )
 
 

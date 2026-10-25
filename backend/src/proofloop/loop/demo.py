@@ -102,6 +102,10 @@ class DemoPlanner:
             return _plan([], cost=0, sheltered=0).model_dump()
 
         plan = best[1]
+        names = ", ".join(s.name for i in plan.shelter_ids if (s := world.shelter(i))) or "nothing"
+        plan = plan.model_copy(
+            update={"rationale": f"Open {names}: the affordable set that best survives an outage."}
+        )
         if len(history) == 1:
             claims = plan.claims.model_copy(
                 update={"people_sheltered": plan.claims.people_sheltered * 1.25}

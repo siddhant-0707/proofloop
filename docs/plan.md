@@ -71,3 +71,25 @@ Finals: Mon Oct 26, 10:15 AM, Reitz Union (one member in person; the ECE teammat
   - **Default budget:** $150,000, enough to open two of the four shelters.
   - **Performance:** the Simulation's reachability search is vectorized and cached per World and shelter, so a Loop on the 1577 x 1370 grid with the rule-based agents takes under 2 s.
   - **First finding:** losing both Cross City schools leaves almost no affected person within reach of a shelter, so the Adversary's attacks on them decide the run.
+
+## Action and attack menus (#7)
+
+Agreed on 2026-10-24.
+
+- **Communities** are the unit for transport and road closures: Keaton Beach, Steinhatchee, Horseshoe Beach, Suwannee, Cross City and Perry.
+  Each is an approximate town center with a 4 km radius (a planning assumption).
+  Affected people per community on the GCOV World: Cross City 213, Steinhatchee 68, Suwannee 14, Horseshoe Beach 3, Keaton Beach 1, Perry 0.
+- **Actions:** open shelter; stage transport (community, seats); allocate budget (contingency reserve, at least $1,000).
+  - Transport carries a community's remaining affected people, nearest to its center first, into open shelters that still have beds, even when its road is closed.
+    It costs $150 per seat (an assumption).
+  - Actions are funded in plan order until the first one the budget cannot cover; it and every later action lose their money.
+    The reserve is held back, not spent, so after a budget cut it is used up before any action loses funding.
+    In the Simulation this is the same as leaving money unspent: the reserve records a deliberate choice to keep money in hand.
+  - A shelter opened twice is paid for once.
+- **Attacks:** shelter offline; road closed (community), which cuts a community off from shelters outside it but not from a shelter inside it; budget cut (10 to 50%).
+  Known limitation: a closed road does not yet stop people from elsewhere walking through the community or into a shelter inside it.
+- **Every attack has a planned counter:** redundant shelters against an offline shelter, transport against a closed road, a reserve against a budget cut.
+- **Target outreach moved to #8,** where it means reaching people flooded outside FEMA zones; in #7 it would have needed an unsourced evacuation-compliance rate.
+- **Gemma:** the draft check lists the exact cost of each action, because Gemma copied totals well but added them badly.
+  Transport is only offered for communities with affected people.
+  On the Gemini API fallback, Gemma loops on the Attack union with a rationale, so OpenRouter is effectively the only working provider for the full menus.

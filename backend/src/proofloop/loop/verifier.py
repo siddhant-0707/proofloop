@@ -18,7 +18,7 @@ def verify(world: World, scenario: Scenario, plan: Plan) -> Verdict:
         _claim("people_sheltered", plan.claims.people_sheltered, actual.people_sheltered, _people),
         _budget(actual.cost, scenario.budget),
         _capacity(world, scenario, plan),
-        _shelters_available(world, scenario, plan),
+        _places_available(world, scenario, plan),
     ]
     return Verdict(passed=all(c.passed for c in checks), checks=checks)
 
@@ -52,14 +52,17 @@ def _capacity(world: World, scenario: Scenario, plan: Plan) -> Check:
     return Check(name="capacity", passed=passed, claimed=claimed, actual=capacity, reason=reason)
 
 
-def _shelters_available(world: World, scenario: Scenario, plan: Plan) -> Check:
+def _places_available(world: World, scenario: Scenario, plan: Plan) -> Check:
     problems = []
     for shelter_id in plan.shelter_ids:
         if world.shelter(shelter_id) is None:
             problems.append(f"unknown shelter {shelter_id}")
         elif shelter_id in scenario.offline_shelters:
             problems.append(f"shelter {shelter_id} is offline")
-    return Check(name="shelters_available", passed=not problems, reason="; ".join(problems))
+    for community_id in plan.community_ids:
+        if world.community(community_id) is None:
+            problems.append(f"unknown community {community_id}")
+    return Check(name="places_available", passed=not problems, reason="; ".join(problems))
 
 
 def _money(amount: float) -> str:

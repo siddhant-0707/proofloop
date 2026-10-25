@@ -1,9 +1,18 @@
 // Types mirror the backend's Transcript and hazard layer responses.
 
-export type Scenario = { budget: number; offline_shelters: string[] };
+export type Scenario = {
+  budget: number;
+  offline_shelters: string[];
+  closed_communities: string[];
+};
+
+export type Action =
+  | { type: "open_shelter"; shelter_id: string }
+  | { type: "stage_transport"; community_id: string; seats: number }
+  | { type: "allocate_budget"; category: "contingency_reserve"; amount: number };
 
 export type Plan = {
-  actions: { type: "open_shelter"; shelter_id: string }[];
+  actions: Action[];
   claims: { cost: number; people_sheltered: number };
   rationale: string;
 };
@@ -14,6 +23,7 @@ export type SimulationResult = {
   people_unreached: number;
   cost: number;
   robustness: number;
+  unfunded_actions: number;
 };
 
 export type Check = {
@@ -44,7 +54,11 @@ export type Round = {
   adversary_call: AgentCall | null;
 };
 
-export type Attack = { type: "shelter_offline"; shelter_id: string; rationale: string };
+export type Attack = { rationale: string } & (
+  | { type: "shelter_offline"; shelter_id: string }
+  | { type: "road_closed"; community_id: string }
+  | { type: "budget_cut"; percent: number }
+);
 
 export type Transcript = {
   base_scenario: Scenario;
@@ -82,7 +96,10 @@ export type ExposureInfo = {
   people_in_flooded_cells: number;
   population_image_url: string;
   shelters: ShelterInfo[];
+  communities: CommunityInfo[];
 };
+
+export type CommunityInfo = { id: string; name: string; latitude: number; longitude: number };
 
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {

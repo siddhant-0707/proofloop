@@ -27,10 +27,11 @@ import numpy as np
 from pyproj import Transformer
 
 from proofloop.exposure.census import Block
+from proofloop.exposure.communities import CommunitySite
 from proofloop.exposure.shelters import ShelterSite
 from proofloop.nisar.gcov import GcovGrid, read_gcov
 from proofloop.nisar.sme2 import BBox, Sme2Grid, read_sme2
-from proofloop.world import FloodKind, Grid, HazardLayer, Shelter, World
+from proofloop.world import Community, FloodKind, Grid, HazardLayer, Shelter, World
 
 STRONG_CHANGE_DB = 6.0
 STRONG_WETTING = 0.2
@@ -130,6 +131,11 @@ def with_exposure(world: World, blocks: Sequence[Block], sites: Sequence[Shelter
     )
 
 
+def with_communities(world: World, sites: Sequence[CommunitySite]) -> World:
+    """Add the communities that transport and road closures act on."""
+    return replace(world, communities=tuple(_place_community(world.grid, s) for s in sites))
+
+
 def rasterize_population(grid: Grid, blocks: Sequence[Block]) -> np.ndarray:
     """People per cell, each block's population spread evenly over the cells it covers.
 
@@ -205,6 +211,22 @@ def _place_shelter(grid: Grid, site: ShelterSite) -> Shelter:
         col=cell[1],
         capacity=site.capacity,
         cost=site.cost,
+    )
+
+
+def _place_community(grid: Grid, site: CommunitySite) -> Community:
+    cell = _cell_of(grid, site.longitude, site.latitude)
+    if cell is None:
+        raise ValueError(
+            f"community {site.id} at ({site.latitude}, {site.longitude}) is off the grid"
+        )
+    _, _, _, dlat = _edges(grid)
+    return Community(
+        id=site.id,
+        name=site.name,
+        row=cell[0],
+        col=cell[1],
+        radius_cells=round(site.radius_m / (dlat * _METERS_PER_DEGREE)),
     )
 
 

@@ -53,7 +53,9 @@ SOURCES: tuple[Source, ...] = (
         summary=(
             "People in flooded cells are affected. They can reach an open shelter through dry "
             "cells within a fixed travel distance. Each shelter takes at most its capacity, "
-            "nearest people first, and nobody is counted twice."
+            "nearest people first, and nobody is counted twice. A closed road cuts a town off "
+            "from shelters outside it; staged transport still reaches it. Transport and shelter "
+            "costs are planning assumptions."
         ),
     ),
 )

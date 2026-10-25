@@ -45,6 +45,22 @@ class Shelter:
     cost: float
 
 
+@dataclass(frozen=True)
+class Community:
+    """A named place (town) whose affected people transport and road closures act on."""
+
+    id: str
+    name: str
+    row: int
+    col: int
+    radius_cells: int
+
+    def mask(self, shape: tuple[int, int]) -> np.ndarray:
+        """Cells within the radius of the community's center."""
+        rows, cols = np.ogrid[: shape[0], : shape[1]]
+        return (rows - self.row) ** 2 + (cols - self.col) ** 2 <= self.radius_cells**2
+
+
 # Compared and hashed by identity, so per-World results (shelter reachability) can be cached.
 @dataclass(frozen=True, eq=False)
 class World:
@@ -54,6 +70,12 @@ class World:
     shelters: tuple[Shelter, ...] = ()
     # How far people can travel to a shelter, in 4-connected cell steps.
     reach_cells: int = 25
+    communities: tuple[Community, ...] = ()
+    # Assumption: high-water vehicles and buses with drivers for a three-day activation.
+    transport_cost_per_seat: float = 150.0
 
     def shelter(self, shelter_id: str) -> Shelter | None:
         return next((s for s in self.shelters if s.id == shelter_id), None)
+
+    def community(self, community_id: str) -> Community | None:
+        return next((c for c in self.communities if c.id == community_id), None)
