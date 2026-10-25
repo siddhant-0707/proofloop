@@ -84,6 +84,9 @@ class CommunityInfo(BaseModel):
     name: str
     latitude: float
     longitude: float
+    radius_km: float
+    # Shelters within its radius: a closed road does not cut the town off from these.
+    shelter_ids: list[str]
 
 
 class ExposureInfo(BaseModel):
@@ -174,6 +177,7 @@ def _fema_png_bytes() -> bytes:
 def exposure() -> ExposureInfo:
     world = big_bend_world()
     lat, lon = world.grid.latitude, world.grid.longitude
+    cell_km = abs(float(lat[0] - lat[1])) * 111.32
     return ExposureInfo(
         total_population=float(world.population.sum()),
         people_in_flooded_cells=float(world.population[world.hazard.flooded].sum()),
@@ -192,7 +196,12 @@ def exposure() -> ExposureInfo:
         ],
         communities=[
             CommunityInfo(
-                id=c.id, name=c.name, latitude=float(lat[c.row]), longitude=float(lon[c.col])
+                id=c.id,
+                name=c.name,
+                latitude=float(lat[c.row]),
+                longitude=float(lon[c.col]),
+                radius_km=c.radius_cells * cell_km,
+                shelter_ids=[s.id for s in world.shelters if c.contains(s.row, s.col)],
             )
             for c in world.communities
         ],

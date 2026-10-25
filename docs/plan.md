@@ -242,7 +242,12 @@ The report stays plain: no Planner, Adversary, Verifier, rounds or models.
 - **No veil:** while a run plays, the map is the stage; a counter along the top shows people at risk, sheltered, and budget used (with any reserve held back), and a caption bar along the bottom says what is happening.
 - **Beats:** each streamed round plays as beats from a pure storyboard: the Planner's shelters light up (rings sized by capacity) and curved arcs run from each town to its shelters, labelled with people (transport arcs in their own color), then the Verifier's verdict lands as a "Verified" or "Rejected" stamp with the reason.
   Here the run does name the Planner, the Verifier, rounds and Gemma 4: showing the agents at work is the point of the demo.
-- **Pacing:** beats play from a queue, about 5 s for a plan and 3 s for a verdict, so the instant engine is watchable; while the next round is on its way, the caption says what the run is doing ("Round 2 · Gemma 4 is attacking the last plan and drafting a stronger one").
+- **Attack beat (#25):** after the verdict, the Adversary's failure plays and the camera moves in on what it hit.
+  A shelter knocked offline sends out two red shock rings, then turns grey ("OFFLINE"); a shelter a budget cut leaves unfunded turns grey ("NO FUNDS"); a closed road draws a red dashed ring at the town's radius.
+  Arcs the attack breaks turn red and stop flowing, and each town shows how many of its people are not reached: those who would have walked to a shelter that closed or lost its money, or out of a town cut off from a shelter outside it; funded transport still gets its riders through.
+  These counts come from the plan's arcs, so they leave out people flooded outside every town; the counter shows the Simulation's total ("Sheltered 453, was 960"), and the budget tile shows the budget itself, so a cut drops it.
+  A closed road never cuts a town off from a shelter inside its radius (`/api/exposure` lists them per town).
+- **Pacing:** beats play from a queue, about 5 s for a plan, 3 s for a verdict and 5 s for an attack, so the instant engine is watchable; while the next round is on its way, the caption says what the run is doing ("Round 2 · Gemma 4 is attacking the last plan and drafting a stronger one").
 - **Progress:** one segment per round plus one for the report, done, current (pulsing) or to come, instead of an estimated percent.
 - **Skip and Cancel:** Skip stops the playback and opens the report as soon as the run ends; Cancel returns to the start.
   The report (or the budget question) opens once the last beat has had its time.

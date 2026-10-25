@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Beat } from "@/lib/storyboard";
 
-// How long each beat stays on screen: a round (plan, then verdict) takes about 8 s.
-const SHOWN_MS: Record<Beat["kind"], number> = { plan: 5_000, verdict: 3_000, note: 3_000 };
+// How long each beat stays on screen: a round (plan, verdict, attack) takes about 13 s.
+const SHOWN_MS: Record<Beat["kind"], number> = { plan: 5_000, verdict: 3_000, attack: 5_000, note: 3_000 };
 
 export type Playback = {
   /** The beat on the map, or null before the first one arrives. */

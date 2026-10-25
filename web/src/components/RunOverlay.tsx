@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Transcript } from "@/lib/api";
 import { dollars, people } from "@/lib/format";
-import type { Figures } from "@/lib/storyboard";
+import type { Beat, Figures } from "@/lib/storyboard";
 import { plannedRounds, type LoopRun } from "@/lib/useLoopRun";
 import type { Playback } from "@/lib/usePlayback";
 
@@ -50,16 +50,7 @@ export function RunStage({
               <p className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.18em] text-sky-300">
                 {run.kind === "re-plan" ? "Updating your plan" : `Building your plan · ${plannedRounds(run)} rounds`}
               </p>
-              {beat?.verdict && !waiting && (
-                <span
-                  key={`${beat.caption}-stamp`}
-                  className={`shrink-0 animate-stamp rounded-md border-2 px-2 py-0.5 text-xs font-bold uppercase tracking-widest ${
-                    beat.verdict.passed ? "border-emerald-400 text-emerald-300" : "border-red-400 text-red-300"
-                  }`}
-                >
-                  {beat.verdict.passed ? "Verified" : "Rejected"}
-                </span>
-              )}
+              {beat && !waiting && <BeatStamp key={beat.caption} beat={beat} />}
               <button
                 type="button"
                 onClick={playback.skip}
@@ -122,6 +113,34 @@ function Steps({ run, playback }: { run: LoopRun; playback: Playback }) {
   );
 }
 
+/** Lands on the caption bar: the Verifier's verdict, or the Adversary's attack. */
+function BeatStamp({ beat }: { beat: Beat }) {
+  if (beat.kind === "attack") {
+    return (
+      <Stamp className="bg-red-500/15 text-red-300 ring-1 ring-red-400/60">
+        <span className="size-1.5 animate-pulse rounded-full bg-red-400" aria-hidden />
+        Attack
+      </Stamp>
+    );
+  }
+  if (!beat.verdict) return null;
+  return beat.verdict.passed ? (
+    <Stamp className="border-2 border-emerald-400 text-emerald-300">Verified</Stamp>
+  ) : (
+    <Stamp className="border-2 border-red-400 text-red-300">Rejected</Stamp>
+  );
+}
+
+function Stamp({ className, children }: { className: string; children: React.ReactNode }) {
+  return (
+    <span
+      className={`flex shrink-0 animate-stamp items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-bold uppercase tracking-widest ${className}`}
+    >
+      {children}
+    </span>
+  );
+}
+
 /** What the run is doing while the next beat is on its way. */
 function waitingCaption(run: LoopRun): string {
   if (run.rounds.length >= plannedRounds(run)) {
@@ -138,14 +157,22 @@ function RunFigures({ figures }: { figures: Figures | null }) {
   return (
     <dl className="pointer-events-auto grid grid-cols-3 divide-x divide-white/10 overflow-hidden rounded-2xl bg-slate-950/85 text-white shadow-2xl ring-1 ring-white/10 backdrop-blur-md">
       <Figure label="People at risk" value={figures?.atRisk} format={people} />
-      <Figure label="Sheltered" value={figures?.sheltered} format={people} accent />
       <Figure
-        label="Budget used"
-        value={figures?.budgetUsed}
+        label="Sheltered"
+        value={figures?.sheltered}
+        format={people}
+        tone={dropped(figures) ? "bad" : "good"}
+        note={figures?.shelteredBefore != null ? `was ${people(figures.shelteredBefore)}` : undefined}
+      />
+      {/* The budget itself is the headline, so a cut visibly drops it. */}
+      <Figure
+        label="Budget"
+        value={figures?.budget}
         format={dollars}
+        tone={figures && figures.budgetUsed > figures.budget ? "bad" : undefined}
         note={
           figures
-            ? `of ${dollars(figures.budget)}${figures.reserve ? ` · ${dollars(figures.reserve)} held back` : ""}`
+            ? `${dollars(figures.budgetUsed)} used${figures.reserve ? ` · ${dollars(figures.reserve)} held back` : ""}`
             : undefined
         }
       />
@@ -153,11 +180,21 @@ function RunFigures({ figures }: { figures: Figures | null }) {
   );
 }
 
+/** An attack left fewer sheltered than the plan did, counting whole people. */
+function dropped(figures: Figures | null): boolean {
+  return (
+    figures?.shelteredBefore != null &&
+    Math.round(figures.sheltered) < Math.round(figures.shelteredBefore)
+  );
+}
+
+const TONES = { good: "text-emerald-300", bad: "text-red-400" };
+
 function Figure(props: {
   label: string;
   value: number | undefined;
   format: (n: number) => string;
-  accent?: boolean;
+  tone?: "good" | "bad";
   note?: string;
 }) {
   const shown = useTween(props.value);
@@ -165,7 +202,9 @@ function Figure(props: {
     <div className="px-3 py-2 sm:px-5 sm:py-2.5">
       <dt className="text-[10px] uppercase tracking-wide text-slate-400 sm:text-[11px]">{props.label}</dt>
       <dd
-        className={`text-lg font-semibold tabular-nums sm:text-2xl ${props.accent ? "text-emerald-300" : ""}`}
+        className={`text-lg font-semibold tabular-nums transition-colors duration-500 sm:text-2xl ${
+          props.tone ? TONES[props.tone] : ""
+        }`}
       >
         {shown == null ? "–" : props.format(shown)}
       </dd>

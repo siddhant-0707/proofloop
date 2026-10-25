@@ -437,6 +437,14 @@ def test_communities_are_placed_on_the_grid_with_a_radius_in_cells():
     assert world.communities == (Community(id="town", name="Town", row=2, col=1, radius_cells=2),)
 
 
+def test_a_community_contains_the_cells_its_mask_covers():
+    town = Community(id="town", name="Town", row=3, col=3, radius_cells=2)
+    mask = town.mask((7, 7))
+
+    assert [town.contains(r, c) for r in range(7) for c in range(7)] == mask.ravel().tolist()
+    assert town.contains(3, 5) and not town.contains(5, 5)
+
+
 def test_a_community_off_the_grid_is_an_error():
     far = CommunitySite("far", "Far", latitude=25.0, longitude=-80.0, radius_m=4_000)
 
