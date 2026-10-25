@@ -81,10 +81,14 @@ const KIND_LABELS: Record<number, string> = {
 };
 const SHELTER_COLOR = "#047857";
 const PEOPLE_RING = "#f59e0b";
+// Keep in sync with FEMA_ZONE_RGB / FEMA_ZONE_ALPHA in hazard_image.py.
+const FEMA_ZONE_TINT = "rgba(20, 184, 166, 0.27)";
+const OUTSIDE_ZONE_LINE = "#db2777";
 
-type LayerGroup = "flooding" | "population" | "shelters";
+type LayerGroup = "flooding" | "fema" | "population" | "shelters";
 const GROUP_LAYERS: Record<LayerGroup, string[]> = {
   flooding: [...BLOCK_LEVELS.map((l) => l.id), "flood-cells", "flood-people"],
+  fema: ["fema-zones", ...BLOCK_LEVELS.map((l) => `${l.id}-outside`), "flood-outside"],
   population: ["population"],
   shelters: ["shelter-dots", "shelter-labels"],
 };
@@ -97,6 +101,7 @@ export default function HazardMap() {
   const [error, setError] = useState<string | null>(null);
   const [visible, setVisible] = useState<Record<LayerGroup, boolean>>({
     flooding: true,
+    fema: false,
     population: false,
     shelters: true,
   });
@@ -277,6 +282,19 @@ export default function HazardMap() {
 
               {exposure && (
                 <>
+                  {exposure.people_outside_fema_zones != null && (
+                    <LayerToggle
+                      checked={visible.fema}
+                      onChange={() => toggle("fema")}
+                      title="FEMA flood zones"
+                      detail={`${Math.round(exposure.people_outside_fema_zones).toLocaleString()} of ${Math.round(exposure.people_in_flooded_cells).toLocaleString()} people in flagged cells live outside them`}
+                    >
+                      <Swatch color={FEMA_ZONE_TINT}>Special Flood Hazard Area</Swatch>
+                      <Swatch color="transparent" ring={OUTSIDE_ZONE_LINE}>
+                        People flagged outside the zones
+                      </Swatch>
+                    </LayerToggle>
+                  )}
                   <LayerToggle
                     checked={visible.population}
                     onChange={() => toggle("population")}
@@ -388,6 +406,20 @@ function addLayers(
       },
       firstLabel,
     );
+    map.addSource("fema-zones", {
+      type: "image",
+      url: exposure.fema_zones_image_url,
+      coordinates: [
+        [west, north],
+        [east, north],
+        [east, south],
+        [west, south],
+      ],
+    });
+    map.addLayer(
+      { id: "fema-zones", type: "raster", source: "fema-zones", paint: { "raster-resampling": "nearest" } },
+      firstLabel,
+    );
   }
 
   const popups: [string, (p: Record<string, unknown>) => string][] = [];
@@ -409,6 +441,18 @@ function addLayers(
           maxzoom: level.maxzoom,
           filter: [">=", ["get", "share"], MIN_DRAWN_SHARE],
           paint: { "fill-color": SHARE_RAMP, "fill-opacity": 0.95 },
+        },
+        namesAbove,
+      );
+      map.addLayer(
+        {
+          id: `${level.id}-outside`,
+          type: "line",
+          source: level.id,
+          minzoom: level.minzoom,
+          maxzoom: level.maxzoom,
+          filter: ["all", [">=", ["get", "share"], MIN_DRAWN_SHARE], [">=", ["get", "outside"], 0.5]],
+          paint: { "line-color": OUTSIDE_ZONE_LINE, "line-width": 1.5 },
         },
         namesAbove,
       );
@@ -439,6 +483,20 @@ function addLayers(
         paint: {
           "line-color": PEOPLE_RING,
           "line-width": ["interpolate", ["linear"], ["zoom"], 14, 1.5, 16, 3],
+        },
+      },
+      namesAbove,
+    );
+    map.addLayer(
+      {
+        id: "flood-outside",
+        type: "line",
+        source: "flood-cells",
+        minzoom: CELLS_MINZOOM,
+        filter: ["all", ["==", ["get", "o"], 1], [">=", ["get", "p"], 0.5]],
+        paint: {
+          "line-color": OUTSIDE_ZONE_LINE,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 14, 1, 16, 2.5],
         },
       },
       namesAbove,
@@ -585,25 +643,29 @@ function square(grid: GridShape, row: number, col: number, size: number, scale =
 function floodCellSquares(cells: FloodCells, grid: GridShape): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
-    features: cells.cells.map(([lon, lat, k, c, p]) => {
+    features: cells.cells.map(([lon, lat, k, c, p, o]) => {
       const [row, col] = cellIndex(grid, lon, lat);
-      return { type: "Feature", properties: { k, c, p }, geometry: square(grid, row, col, 1) };
+      return { type: "Feature", properties: { k, c, p, o }, geometry: square(grid, row, col, 1) };
     }),
   };
 }
 
 function floodBlocks(cells: FloodCells, grid: GridShape, factor: number): GeoJSON.FeatureCollection {
-  const blocks = new Map<string, { row: number; col: number; open: number; canopy: number; other: number; people: number }>();
-  for (const [lon, lat, k, , p] of cells.cells) {
+  const blocks = new Map<
+    string,
+    { row: number; col: number; open: number; canopy: number; other: number; people: number; outside: number }
+  >();
+  for (const [lon, lat, k, , p, o] of cells.cells) {
     const [cellRow, cellCol] = cellIndex(grid, lon, lat);
     const row = Math.floor(cellRow / factor) * factor;
     const col = Math.floor(cellCol / factor) * factor;
     const key = `${row}/${col}`;
-    const block = blocks.get(key) ?? { row, col, open: 0, canopy: 0, other: 0, people: 0 };
+    const block = blocks.get(key) ?? { row, col, open: 0, canopy: 0, other: 0, people: 0, outside: 0 };
     if (k === 1) block.open += 1;
     else if (k === 2) block.canopy += 1;
     else block.other += 1;
     block.people += p;
+    if (o === 1) block.outside += p;
     blocks.set(key, block);
   }
   return {
@@ -614,7 +676,7 @@ function floodBlocks(cells: FloodCells, grid: GridShape, factor: number): GeoJSO
       const share = flagged / size;
       return {
         type: "Feature",
-        properties: { share, flagged, open: b.open, canopy: b.canopy, people: b.people },
+        properties: { share, flagged, open: b.open, canopy: b.canopy, people: b.people, outside: b.outside },
         geometry: square(grid, b.row, b.col, factor, blockSide(share)),
       };
     }),
@@ -640,6 +702,7 @@ function blockPopup(p: Record<string, unknown>, metres: number): string {
   return `<strong>${Math.max(1, Math.round(Number(p.share) * 100))}% of this ${metres.toLocaleString()} m square flagged as flooded</strong><br/>
     ${Number(p.flagged).toLocaleString()} cells${kinds.length ? `: ${kinds.join(", ")}` : ""}<br/>
     ${people > 0 ? `${people.toLocaleString()} ${people === 1 ? "person lives" : "people live"} in them` : "Nobody lives in them"}<br/>
+    ${Number(p.outside) >= 0.5 ? `${Math.round(Number(p.outside)).toLocaleString()} of them outside FEMA flood zones<br/>` : ""}
     <span style="color:#64748b">Zoom in to see each cell</span>`;
 }
 
@@ -647,7 +710,9 @@ function cellPopup(p: Record<string, unknown>, metres: number): string {
   const people = Math.round(Number(p.p));
   return `<strong>${KIND_LABELS[Number(p.k)] ?? KIND_LABELS[0]}</strong><br/>
     Confidence ${Math.round(Number(p.c) * 100)}%<br/>
-    ${people > 0 ? `About ${people} ${people === 1 ? "person lives" : "people live"} in this ${metres} m cell` : "Nobody lives in this cell"}`;
+    ${people > 0 ? `About ${people} ${people === 1 ? "person lives" : "people live"} in this ${metres} m cell` : "Nobody lives in this cell"}${
+      Number(p.o) === 1 ? "<br/>Outside FEMA flood zones: likely no flood insurance" : ""
+    }`;
 }
 
 function points(

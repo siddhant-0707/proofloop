@@ -60,7 +60,8 @@ cd web && npx tsc --noEmit && npm run lint
 | Route | What it does |
 |---|---|
 | `GET /api/hazard`, `/api/hazard.png` | Hazard layer metadata and map image |
-| `GET /api/exposure`, `/api/population.png` | Population, shelters and the population image |
+| `GET /api/exposure`, `/api/population.png` | Population, shelters, communities, people outside FEMA zones, and the population image |
+| `GET /api/fema-zones.png` | FEMA Special Flood Hazard Area as a map image |
 | `POST /api/loop/stream?agents=gemma\|rules` | Run the Loop on the Big Bend World, streaming one JSON event per line (`started`, each `round`, then `transcript` or `error`); the web app uses this |
 | `POST /api/loop/gemma` | Run the Loop on the Big Bend World with Gemma 4 as Planner and Adversary |
 | `POST /api/loop` | Run the Loop on the Big Bend World with rule-based agents |

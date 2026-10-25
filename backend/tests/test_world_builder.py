@@ -10,6 +10,7 @@ from sme2_files import one_cell, write_sme2
 
 from proofloop.exposure.census import Block
 from proofloop.exposure.communities import CommunitySite
+from proofloop.exposure.fema import FloodZone
 from proofloop.exposure.shelters import ShelterSite
 from proofloop.nisar.gcov import read_gcov, write_gcov_crop
 from proofloop.nisar.sme2 import BBox
@@ -21,6 +22,7 @@ from proofloop.world.builder import (
     build_world_from_sme2,
     with_communities,
     with_exposure,
+    with_flood_zones,
 )
 from proofloop.world.store import load_world, save_world
 
@@ -452,3 +454,33 @@ def test_a_cached_world_keeps_its_communities_and_transport_price(tmp_path):
 
     assert loaded.communities == built.communities
     assert loaded.transport_cost_per_seat == 175.0
+
+
+def _square(west: float, south: float, east: float, north: float):
+    return ((west, south), (east, south), (east, north), (west, north), (west, south))
+
+
+def test_cells_inside_a_special_flood_hazard_area_are_in_a_fema_zone():
+    # Cell (1, 1) is centered at 29.85 N, 83.85 W; the small A polygon covers no cell center.
+    zones = [
+        FloodZone(zone="AE", rings=(_square(-83.9, 29.8, -83.8, 29.9),)),
+        FloodZone(zone="A", rings=(_square(-84.0, 29.6, -83.95, 29.62),)),  # covers no center
+    ]
+
+    world = with_flood_zones(_dry_world(), zones)
+
+    assert world.in_fema_zone is not None
+    assert np.argwhere(world.in_fema_zone).tolist() == [[1, 1]]
+
+
+def test_a_cached_world_keeps_its_fema_zones(tmp_path):
+    zone = FloodZone(zone="VE", rings=(_square(-83.9, 29.8, -83.8, 29.9),))
+    built = with_flood_zones(_dry_world(), [zone])
+    cache = tmp_path / "world.npz"
+
+    save_world(built, cache)
+    loaded = load_world(cache)
+
+    np.testing.assert_array_equal(loaded.in_fema_zone, built.in_fema_zone)
+    save_world(_dry_world(), cache)
+    assert load_world(cache).in_fema_zone is None

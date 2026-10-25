@@ -4,12 +4,14 @@ export type Scenario = {
   budget: number;
   offline_shelters: string[];
   closed_communities: string[];
+  unwarned_outside_zones: boolean;
 };
 
 export type Action =
   | { type: "open_shelter"; shelter_id: string }
   | { type: "stage_transport"; community_id: string; seats: number }
-  | { type: "allocate_budget"; category: "contingency_reserve"; amount: number };
+  | { type: "allocate_budget"; category: "contingency_reserve"; amount: number }
+  | { type: "target_outreach"; community_id: string };
 
 export type Plan = {
   actions: Action[];
@@ -24,6 +26,7 @@ export type SimulationResult = {
   cost: number;
   robustness: number;
   unfunded_actions: number;
+  people_unreached_outside_zones: number;
 };
 
 export type Check = {
@@ -58,6 +61,7 @@ export type Attack = { rationale: string } & (
   | { type: "shelter_offline"; shelter_id: string }
   | { type: "road_closed"; community_id: string }
   | { type: "budget_cut"; percent: number }
+  | { type: "unwarned_outside_zone" }
 );
 
 export type Transcript = {
@@ -94,6 +98,8 @@ export type ShelterInfo = {
 export type ExposureInfo = {
   total_population: number;
   people_in_flooded_cells: number;
+  people_outside_fema_zones: number | null;
+  fema_zones_image_url: string;
   population_image_url: string;
   shelters: ShelterInfo[];
   communities: CommunityInfo[];
@@ -103,7 +109,14 @@ export type CommunityInfo = { id: string; name: string; latitude: number; longit
 
 export type FloodCells = {
   kinds: Record<string, string>; // FloodKind value -> name
-  cells: [lon: number, lat: number, kind: number, confidence: number, people: number][];
+  cells: [
+    lon: number,
+    lat: number,
+    kind: number,
+    confidence: number,
+    people: number,
+    outsideFemaZones: number,
+  ][];
 };
 
 async function json<T>(response: Response): Promise<T> {

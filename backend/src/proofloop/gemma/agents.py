@@ -32,6 +32,9 @@ Actions (use any mix, in priority order; earlier actions are funded first):
   road is closed. Costs {seat_cost} per seat.
 - allocate_budget(contingency_reserve, amount): money held back (at least $1,000). If the
   budget is cut later, the reserve absorbs the cut before any action loses funding.
+- target_outreach(community_id): door-to-door teams and alerts warn that community's
+  people flooded outside FEMA flood zones. Costs {outreach_cost}. It matters once those
+  people are unwarned: without outreach they think they are safe and stay home.
 
 Rules:
 - Only use shelters and communities from the lists, and never a shelter marked OFFLINE.
@@ -57,6 +60,9 @@ Choose exactly one attack that leaves the plan sheltering as few people as possi
   cannot reach a shelter on their own (transport still gets through).
 - budget_cut(percent, 10 to 50): the county loses money; actions the smaller budget
   cannot fund are dropped, last first, after any contingency reserve is used up.
+- unwarned_outside_zone(): people flooded outside FEMA flood zones believe they are
+  safe (and likely have no flood insurance), so they stay home unless the plan runs
+  outreach in their community. Strong when many affected people live outside the zones.
 Prefer what the plan relies on most. Only use shelters and communities from the lists.
 rationale: one or two sentences on why this could happen and why it hurts, naming
 shelters and communities by name (not id) and citing sources as [S1], [S2].
@@ -71,7 +77,9 @@ class GemmaPlanner:
 
     def propose(self, world: World, scenario: Scenario, history: Sequence[Round]) -> AgentReply:
         system = PLANNER_SYSTEM.format(
-            sources=source_pack(), seat_cost=f"${world.transport_cost_per_seat:,.0f}"
+            sources=source_pack(),
+            seat_cost=f"${world.transport_cost_per_seat:,.0f}",
+            outreach_cost=f"${world.outreach_cost:,.0f}",
         )
         # Transport only makes sense where people are affected.
         allowed = {**_allowed(world, scenario), "community_id": _affected_communities(world)}
@@ -152,12 +160,25 @@ def _situation(world: World, scenario: Scenario) -> str:
     towns = []
     for community in world.communities:
         people = _affected_in(world, community)
+        outside = _affected_in(world, community, outside_zones_only=True)
         road = "road CLOSED" if community.id in scenario.closed_communities else "road open"
-        towns.append(f"- id {community.id} ({community.name}): {people:.0f} affected, {road}")
+        towns.append(
+            f"- id {community.id} ({community.name}): {people:.0f} affected "
+            f"({outside:.0f} outside FEMA flood zones), {road}"
+        )
     return "\n".join(
         [
             f"Affected people: {affected:.0f}. Budget: ${scenario.budget:,.0f}. "
-            f"Transport: ${world.transport_cost_per_seat:,.0f} per seat.",
+            f"Transport: ${world.transport_cost_per_seat:,.0f} per seat. "
+            f"Outreach: ${world.outreach_cost:,.0f} per community.",
+            *(
+                [
+                    "People flooded outside FEMA flood zones are UNWARNED: they stay home "
+                    "unless the plan runs outreach in their community."
+                ]
+                if scenario.unwarned_outside_zones
+                else []
+            ),
             "Shelters (refer to them by id):",
             *rows,
             *(["Communities (refer to them by id):", *towns] if towns else []),
@@ -171,6 +192,8 @@ def _check(draft: Plan, result: SimulationResult, scenario: Scenario, world: Wor
         f"cost ${result.cost:,.0f}, shelters {result.people_sheltered:.0f} of "
         f"{result.people_affected:.0f} affected people "
         f"(you claimed ${draft.claims.cost:,.0f} and {draft.claims.people_sheltered:.0f}). "
+        f"{result.people_unreached_outside_zones:.0f} unreached people live outside FEMA "
+        "flood zones. "
         f"Cost of each action: {_cost_breakdown(draft, world)}; total ${result.cost:,.0f}. "
         "Your final claims.cost must be the total for your final actions."
     )
@@ -192,8 +215,10 @@ def _affected_communities(world: World) -> list[str]:
     return [c.id for c in world.communities if _affected_in(world, c) > 0]
 
 
-def _affected_in(world: World, community: Community) -> float:
-    return float(world.population[community.mask(world.grid.shape) & world.hazard.flooded].sum())
+def _affected_in(world: World, community: Community, outside_zones_only: bool = False) -> float:
+    flooded = world.flooded_outside_fema_zones() if outside_zones_only else world.hazard.flooded
+    cells = community.mask(world.grid.shape) & flooded
+    return float(world.population[cells].sum())
 
 
 def _allowed(world: World, scenario: Scenario) -> dict[str, list[str]]:

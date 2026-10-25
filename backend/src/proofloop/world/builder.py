@@ -28,6 +28,7 @@ from pyproj import Transformer
 
 from proofloop.exposure.census import Block
 from proofloop.exposure.communities import CommunitySite
+from proofloop.exposure.fema import FloodZone
 from proofloop.exposure.shelters import ShelterSite
 from proofloop.nisar.gcov import GcovGrid, read_gcov
 from proofloop.nisar.sme2 import BBox, Sme2Grid, read_sme2
@@ -147,6 +148,21 @@ def with_exposure(world: World, blocks: Sequence[Block], sites: Sequence[Shelter
 def with_communities(world: World, sites: Sequence[CommunitySite]) -> World:
     """Add the communities that transport and road closures act on."""
     return replace(world, communities=tuple(_place_community(world.grid, s) for s in sites))
+
+
+def with_flood_zones(world: World, zones: Sequence[FloodZone]) -> World:
+    """Mark cells whose centers lie inside a FEMA Special Flood Hazard Area polygon."""
+    west, north, dlon, dlat = _edges(world.grid)
+    inside = np.zeros(world.grid.shape, dtype=np.int64)
+    for zone in zones:
+        rings = [np.array(ring, dtype=np.float64) for ring in zone.rings if len(ring) >= 3]
+        if rings:
+            cells = [
+                np.column_stack([(r[:, 0] - west) / dlon, (north - r[:, 1]) / dlat]) - 0.5
+                for r in rings
+            ]
+            _fill_rings(inside, cells, 1)
+    return replace(world, in_fema_zone=inside.astype(bool))
 
 
 def rasterize_population(grid: Grid, blocks: Sequence[Block]) -> np.ndarray:

@@ -15,6 +15,7 @@ from proofloop.loop.schemas import (
     ATTACK,
     AgentCall,
     Attack,
+    BudgetCut,
     Plan,
     Recommendation,
     RoadClosed,
@@ -22,6 +23,7 @@ from proofloop.loop.schemas import (
     Scenario,
     ShelterOffline,
     Transcript,
+    UnwarnedOutsideZone,
 )
 from proofloop.loop.simulation import simulate
 from proofloop.loop.verifier import verify
@@ -151,7 +153,10 @@ def _apply(scenario: Scenario, attack: Attack) -> Scenario:
         return scenario.with_offline(attack.shelter_id)
     if isinstance(attack, RoadClosed):
         return scenario.with_closed(attack.community_id)
-    return scenario.with_budget_cut(attack.percent)
+    if isinstance(attack, BudgetCut):
+        return scenario.with_budget_cut(attack.percent)
+    assert isinstance(attack, UnwarnedOutsideZone)
+    return scenario.with_unwarned()
 
 
 def _recommend(world: World, final: Scenario, rounds: list[Round]) -> Recommendation | None:

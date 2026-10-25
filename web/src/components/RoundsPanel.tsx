@@ -7,6 +7,7 @@ import {
   streamLoop,
   type AgentCall,
   type AgentKind,
+  type Attack,
   type Round,
   type SimulationResult,
   type Transcript,
@@ -26,12 +27,27 @@ function usePlaceName(): PlaceName {
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
+// Affected people outside FEMA flood zones, the people the unwarned attack keeps home.
+const OutsideZones = createContext<number | null>(null);
+
+function useAttackText() {
+  const name = usePlaceName();
+  const outside = useContext(OutsideZones);
+  return (attack: Attack) => {
+    const text = sentence(describeAttack(attack, name));
+    return attack.type === "unwarned_outside_zone" && outside != null
+      ? `${text} (${people(outside)} people)`
+      : text;
+  };
+}
+
 export default function RoundsPanel() {
   const [agents, setAgents] = useState<AgentKind>("gemma");
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [liveRounds, setLiveRounds] = useState<Round[]>([]);
   const [totalRounds, setTotalRounds] = useState(3);
   const [names, setNames] = useState<Record<string, string>>({});
+  const [outsideZones, setOutsideZones] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,9 +55,10 @@ export default function RoundsPanel() {
 
   useEffect(() => {
     fetchExposure()
-      .then((e) =>
-        setNames(Object.fromEntries([...e.shelters, ...e.communities].map((p) => [p.id, p.name]))),
-      )
+      .then((e) => {
+        setNames(Object.fromEntries([...e.shelters, ...e.communities].map((p) => [p.id, p.name])));
+        setOutsideZones(e.people_outside_fema_zones);
+      })
       .catch(() => {});
     return () => abort.current?.abort();
   }, []);
@@ -78,6 +95,7 @@ export default function RoundsPanel() {
 
   return (
     <PlaceNames.Provider value={names}>
+      <OutsideZones.Provider value={outsideZones}>
       <section className="flex h-full min-h-0 flex-col gap-3">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -138,6 +156,7 @@ export default function RoundsPanel() {
           </ol>
         )}
       </section>
+      </OutsideZones.Provider>
     </PlaceNames.Provider>
   );
 }
@@ -179,6 +198,7 @@ function Progress({
 
 function RoundCard({ round, recommended }: { round: Round; recommended: boolean }) {
   const name = usePlaceName();
+  const attackText = useAttackText();
   const failed = round.verdict?.checks.filter((c) => !c.passed) ?? [];
   return (
     <li className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
@@ -226,7 +246,7 @@ function RoundCard({ round, recommended }: { round: Round; recommended: boolean 
         <div className="mt-2 border-t border-slate-100 pt-2">
           <p className="text-xs text-amber-700">
             <span className="font-medium">Attack:</span>{" "}
-            {sentence(describeAttack(round.attack, name))}
+            {attackText(round.attack)}
           </p>
           {round.attack.rationale && (
             <p className="mt-1 text-xs leading-relaxed text-slate-600">{round.attack.rationale}</p>
@@ -305,6 +325,12 @@ function Score({ result }: { result: SimulationResult }) {
           {pct}% · {dollars(result.cost)}
         </span>
       </div>
+      {result.people_unreached_outside_zones >= 0.5 && (
+        <p className="mt-1 text-xs text-slate-500">
+          {people(result.people_unreached_outside_zones)} unreached people live outside FEMA flood
+          zones
+        </p>
+      )}
       {result.unfunded_actions > 0 && (
         <p className="mt-1 text-xs text-amber-700">
           {result.unfunded_actions} action{result.unfunded_actions === 1 ? "" : "s"} left without
@@ -319,7 +345,7 @@ function Score({ result }: { result: SimulationResult }) {
 }
 
 function FinalAttack({ transcript }: { transcript: Transcript }) {
-  const name = usePlaceName();
+  const attackText = useAttackText();
   if (transcript.final_adversary_error) {
     return <ErrorLine label="Adversary" message={transcript.final_adversary_error} />;
   }
@@ -327,7 +353,7 @@ function FinalAttack({ transcript }: { transcript: Transcript }) {
   return (
     <li className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-800">
       <span className="font-semibold">Final attack:</span>{" "}
-      {sentence(describeAttack(transcript.final_attack, name))}. No plan gets to answer it.
+      {attackText(transcript.final_attack)}. No plan gets to answer it.
       {transcript.final_attack.rationale && (
         <p className="mt-1 text-xs leading-relaxed text-amber-900/80">
           {transcript.final_attack.rationale}
