@@ -158,11 +158,18 @@ export type Recommendation = {
 };
 
 /** What to do instead when a failure hits: a plan built by code for those conditions. */
-export type Backup = { actions: Action[]; result: SimulationResult };
+export type Backup = {
+  actions: Action[];
+  result: SimulationResult;
+  /** Where people go under the case's failures with this plan instead. */
+  briefing: Briefing | null;
+};
 
 export type StressCase = {
   attacks: Attack[];
   result: SimulationResult;
+  /** Where people go under these failures with the plan. */
+  briefing: Briefing | null;
   /** Set when a backup plan shelters more people under these failures than the plan does. */
   backup: Backup | null;
 };

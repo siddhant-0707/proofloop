@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { Check, NeighborhoodBriefing, Round } from "@/lib/api";
-import { roundBeats } from "@/lib/storyboard";
+import type { Check, NeighborhoodBriefing, Recommendation, Round, StressCase } from "@/lib/api";
+import { finalPlanBeat, roundBeats, stressBeats } from "@/lib/storyboard";
 
 const NAMES: Record<string, string> = {
   "ruth-raines-ms": "Ruth Raines Middle School",
   "taylor-county-hs": "Taylor County High School",
+  "dixie-county-hs": "Dixie County High School",
   perry: "Perry",
   "cross-city": "Cross City",
   steinhatchee: "Steinhatchee",
@@ -383,5 +384,163 @@ describe("people rerouting after the attack", () => {
       "verdict",
       "attack",
     ]);
+  });
+});
+
+describe("replaying a stress case from the report", () => {
+  /** The final plan: round 1's verified plan, as planned at $150,000. */
+  function recommendation(): Recommendation {
+    const round = verifiedRound();
+    return {
+      round_index: 0,
+      plan: round.plan!,
+      result: round.result!,
+      full_cover_cost: null,
+      report: round.report,
+      stress: null,
+      combined: null,
+      candidates: [],
+    };
+  }
+
+  const affected = 959.68;
+  const outcome = (sheltered: number, cost = 116_850) => ({
+    people_affected: affected,
+    people_sheltered: sheltered,
+    people_unreached: affected - sheltered,
+    cost,
+    robustness: sheltered / affected,
+    unfunded_actions: 0,
+  });
+  const thsOffline = { rationale: "", type: "shelter_offline", shelter_id: "taylor-county-hs" } as const;
+
+  /** Taylor County High School offline: Perry's people have nowhere left to go. */
+  function shelterLost(): StressCase {
+    return {
+      attacks: [thsOffline],
+      result: outcome(453.13),
+      briefing: {
+        conditions: [],
+        limitations: [],
+        neighborhoods: [
+          neighborhood("perry", [], 299.56),
+          neighborhood("cross-city", [["ruth-raines-ms", 204.52]]),
+          neighborhood("steinhatchee", [["ruth-raines-ms", 63.84, 40]]),
+        ],
+      },
+      backup: null,
+    };
+  }
+
+  it("rests on the final plan as planned, which a reset returns to", () => {
+    const rest = finalPlanBeat(recommendation(), 150_000, name);
+    const [planned] = roundBeats(verifiedRound(), places);
+
+    expect(rest.kind).toBe("plan");
+    expect(rest.caption).toBe(
+      "The plan: open Ruth Raines Middle School and Taylor County High School, 960 of 960 people sheltered",
+    );
+    expect(rest.shelters).toEqual(planned.shelters);
+    expect(rest.arcs).toEqual(planned.arcs);
+    expect(rest.figures).toEqual(planned.figures);
+  });
+
+  it("strikes one failure, then shows where people reroute", () => {
+    const beats = stressBeats(shelterLost(), recommendation(), 150_000, places);
+    const [strike, reroute] = beats;
+
+    expect(beats.map((b) => b.kind)).toEqual(["attack", "reroute"]);
+    expect(strike.caption).toBe("Taylor County High School goes offline, 453 of 960 people sheltered");
+    expect(strike.shelters).toEqual({ "ruth-raines-ms": "open", "taylor-county-hs": "offline" });
+    expect(strike.arcs.filter((a) => a.broken).map((a) => a.from)).toEqual(["perry"]);
+    expect(strike.figures).toMatchObject({ sheltered: 453.13, shelteredBefore: 959.51 });
+    expect(reroute.caption).toBe("People reroute: 453 of 960 still reach a shelter");
+    expect(reroute.arcs.map((a) => [a.from, a.to, a.people])).toEqual([
+      ["cross-city", "ruth-raines-ms", 204.52],
+      ["steinhatchee", "ruth-raines-ms", 63.84],
+    ]);
+    expect(reroute.unreached).toEqual({ perry: 299.56 });
+  });
+
+  it("strikes both failures of a pair at once", () => {
+    const pair: StressCase = {
+      attacks: [thsOffline, { rationale: "", type: "budget_cut", percent: 25 }],
+      result: outcome(453.13),
+      briefing: null,
+      backup: null,
+    };
+
+    const [strike, ...rest] = stressBeats(pair, recommendation(), 150_000, places);
+
+    expect(rest).toEqual([]);
+    expect(strike.caption).toBe(
+      "Taylor County High School goes offline and the budget is cut by 25%, 453 of 960 people sheltered",
+    );
+    expect(strike.shelters).toEqual({ "ruth-raines-ms": "open", "taylor-county-hs": "offline" });
+    expect(strike.figures?.budget).toBe(112_500);
+  });
+
+  it("closes every road a pair closes", () => {
+    const pair: StressCase = {
+      attacks: [
+        { rationale: "", type: "road_closed", community_id: "steinhatchee" },
+        { rationale: "", type: "road_closed", community_id: "cross-city" },
+      ],
+      result: outcome(935.67),
+      briefing: null,
+      backup: null,
+    };
+
+    const [strike] = stressBeats(pair, recommendation(), 150_000, places);
+
+    expect(strike.cutTowns).toEqual(["steinhatchee", "cross-city"]);
+    expect(strike.arcs.filter((a) => a.broken).map((a) => a.from)).toEqual(["steinhatchee"]);
+  });
+
+  it("ends on the backup plan's shelters and arcs under the same failure", () => {
+    const backedUp: StressCase = {
+      ...shelterLost(),
+      backup: {
+        actions: [
+          { type: "open_shelter", shelter_id: "ruth-raines-ms" },
+          { type: "open_shelter", shelter_id: "dixie-county-hs" },
+        ],
+        result: outcome(959.51, 120_000),
+        briefing: {
+          conditions: [],
+          limitations: [],
+          neighborhoods: [
+            neighborhood("perry", [["dixie-county-hs", 299.56]]),
+            neighborhood("cross-city", [["ruth-raines-ms", 204.52]]),
+          ],
+        },
+      },
+    };
+
+    const beats = stressBeats(backedUp, recommendation(), 150_000, places);
+    const backup = beats[2];
+
+    expect(beats.map((b) => b.kind)).toEqual(["attack", "reroute", "backup"]);
+    expect(backup.caption).toBe(
+      "Backup plan: open Ruth Raines Middle School and Dixie County High School, 960 of 960 people sheltered",
+    );
+    expect(backup.shelters).toEqual({
+      "taylor-county-hs": "offline",
+      "ruth-raines-ms": "open",
+      "dixie-county-hs": "open",
+    });
+    expect(backup.arcs).toEqual([
+      { from: "perry", to: "dixie-county-hs", people: 299.56, carried: 0, broken: false },
+      { from: "cross-city", to: "ruth-raines-ms", people: 204.52, carried: 0, broken: false },
+    ]);
+    expect(backup.unreached).toEqual({});
+    expect(backup.figures).toEqual({
+      atRisk: affected,
+      sheltered: 959.51,
+      shelteredBefore: 453.13,
+      budgetUsed: 120_000,
+      budget: 150_000,
+      reserve: 0,
+    });
   });
 });

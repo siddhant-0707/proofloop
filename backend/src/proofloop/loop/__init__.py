@@ -26,12 +26,17 @@ from proofloop.loop.schemas import (
     Round,
     Scenario,
     ShelterOffline,
-    StressCase,
     StressTest,
     Transcript,
 )
 from proofloop.loop.simulation import simulate, trace
-from proofloop.loop.stress import apply_all, apply_attack, stress_test, typical, unique_attacks
+from proofloop.loop.stress import (
+    apply_attack,
+    stress_case,
+    stress_test,
+    typical,
+    unique_attacks,
+)
 from proofloop.loop.verifier import verify
 from proofloop.world import World
 
@@ -196,11 +201,7 @@ def _recommend(world: World, base: Scenario, rounds: list[Round]) -> Recommendat
     plan = baseline if round_index is None else rounds[round_index].plan
     assert plan is not None
     result = simulate(world, base, plan)
-    combined = (
-        StressCase(attacks=found, result=simulate(world, apply_all(base, found), plan))
-        if found
-        else None
-    )
+    combined = stress_case(world, base, plan, found) if found else None
     return Recommendation(
         round_index=round_index,
         plan=plan,
