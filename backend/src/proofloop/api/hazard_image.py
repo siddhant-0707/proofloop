@@ -14,7 +14,7 @@ from proofloop.nisar.sme2 import BBox
 from proofloop.world import FloodKind, World
 
 # Colour ramps from low to high confidence (RGB), alpha rises with confidence.
-# Layers that cannot tell flood kinds apart use the hazard ramp. Keep in sync with HazardMap.tsx.
+# Layers that cannot tell flood kinds apart use the hazard ramp.
 LOW = np.array([253, 174, 97])
 HIGH = np.array([215, 25, 28])
 KIND_RAMPS = {
@@ -22,6 +22,17 @@ KIND_RAMPS = {
     FloodKind.UNDER_CANOPY: (np.array([186, 230, 253]), np.array([2, 132, 199])),
 }
 MIN_ALPHA, MAX_ALPHA = 110, 220
+# Flood surface: evidence blurred over SURFACE_SIGMA cells (60 m each), drawn from
+# SURFACE_THRESHOLD and at its strongest from SURFACE_FULL. Set from the Big Bend scene, where
+# flagged cells are sparse: there the blurred evidence tops out near 0.26.
+SURFACE_SIGMA = 4.0
+SURFACE_THRESHOLD = 0.02
+SURFACE_FULL = 0.12
+SURFACE_MIN_ALPHA = 60
+# (faintest, strongest, most opaque) per kind, for a dark basemap: stronger evidence is
+# brighter. Open water is the brightest and most opaque. Keep in sync with HazardMap.tsx.
+OPEN_WATER_SURFACE = (np.array([56, 189, 248]), np.array([147, 197, 253]), 235)
+CANOPY_SURFACE = (np.array([8, 145, 178]), np.array([34, 211, 238]), 175)
 # Population density: transparent below 1 person/km^2, most opaque from 1,000.
 POPULATION_RGB = np.array([51, 65, 85])
 POPULATION_MIN_DENSITY = 1.0
@@ -61,6 +72,45 @@ def hazard_png(world: World) -> bytes:
     return _png(rgb, alpha)
 
 
+def flood_surface_png(world: World) -> bytes:
+    """Flood evidence smoothed into a water-like surface, for display only.
+
+    Flagged cells' confidence is blurred over a few cells, separately for open water
+    and for flooding under canopy, and drawn where the blurred evidence clears
+    SURFACE_THRESHOLD: lone speckles fade out and clusters read as water. Open water
+    is bright blue and nearly opaque; under canopy is darker cyan and never as opaque,
+    so it always reads fainter. A method that cannot tell kinds apart draws everything
+    as open water. The Simulation still uses the binary flagged cells.
+    """
+    bounds = hazard_bounds(world)
+    rows = _mercator_rows(world.grid.latitude, bounds.north, bounds.south)
+    hazard = world.hazard
+    evidence = np.where(hazard.flooded, hazard.confidence, 0.0)
+    canopy = (
+        hazard.kind == FloodKind.UNDER_CANOPY
+        if hazard.kind is not None
+        else np.zeros_like(hazard.flooded)
+    )
+
+    layers = []
+    for in_kind, (low, high, max_alpha) in (
+        (~canopy, OPEN_WATER_SURFACE),
+        (canopy, CANOPY_SURFACE),
+    ):
+        density = _blur(np.where(in_kind, evidence, 0.0), SURFACE_SIGMA)[rows]
+        t = np.clip((density - SURFACE_THRESHOLD) / (SURFACE_FULL - SURFACE_THRESHOLD), 0.0, 1.0)
+        alpha = np.where(
+            density >= SURFACE_THRESHOLD, SURFACE_MIN_ALPHA + (max_alpha - SURFACE_MIN_ALPHA) * t, 0
+        )
+        layers.append((low + (high - low) * t[..., None], alpha))
+
+    (water_rgb, water_alpha), (canopy_rgb, canopy_alpha) = layers
+    water_wins = water_alpha >= canopy_alpha
+    rgb = np.where(water_wins[..., None], water_rgb, canopy_rgb).astype(np.uint8)
+    alpha = np.maximum(water_alpha, canopy_alpha).astype(np.uint8)
+    return _png(rgb, alpha)
+
+
 def population_png(world: World) -> bytes:
     """People per km^2, one colour with opacity rising on a log scale."""
     bounds = hazard_bounds(world)
@@ -90,6 +140,16 @@ def fema_zone_png(world: World) -> bytes:
     rgb = np.broadcast_to(FEMA_ZONE_RGB, (*zone.shape, 3)).astype(np.uint8)
     alpha = np.where(zone, FEMA_ZONE_ALPHA, 0).astype(np.uint8)
     return _png(rgb, alpha)
+
+
+def _blur(values: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian blur, separable, with zeros beyond the edges."""
+    radius = int(np.ceil(3 * sigma))
+    x = np.arange(-radius, radius + 1)
+    kernel = np.exp(-(x**2) / (2 * sigma**2))
+    kernel /= kernel.sum()
+    rows = np.apply_along_axis(lambda r: np.convolve(r, kernel, mode="same"), 1, values)
+    return np.apply_along_axis(lambda c: np.convolve(c, kernel, mode="same"), 0, rows)
 
 
 def _png(rgb: np.ndarray, alpha: np.ndarray) -> bytes:

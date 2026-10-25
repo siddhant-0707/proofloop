@@ -20,7 +20,13 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from proofloop.api.hazard_image import fema_zone_png, hazard_bounds, hazard_png, population_png
+from proofloop.api.hazard_image import (
+    fema_zone_png,
+    flood_surface_png,
+    hazard_bounds,
+    hazard_png,
+    population_png,
+)
 from proofloop.gemma.agents import GemmaAdversary, GemmaPlanner
 from proofloop.gemma.client import GemmaClient
 from proofloop.gemma.providers import providers_from_env
@@ -63,6 +69,8 @@ class HazardLayerInfo(BaseModel):
     open_water_cells: int | None
     under_canopy_cells: int | None
     image_url: str
+    # The flagged cells' evidence smoothed into a water-like surface, for display only.
+    surface_url: str
 
 
 class FloodCells(BaseModel):
@@ -127,6 +135,7 @@ def hazard() -> HazardLayerInfo:
         open_water_cells=None if kind is None else int((kind == FloodKind.OPEN_WATER).sum()),
         under_canopy_cells=None if kind is None else int((kind == FloodKind.UNDER_CANOPY).sum()),
         image_url="/api/hazard.png",
+        surface_url="/api/flood-surface.png",
     )
 
 
@@ -140,6 +149,20 @@ def hazard_image() -> Response:
 @lru_cache(maxsize=1)
 def _hazard_png_bytes() -> bytes:
     return hazard_png(big_bend_world())
+
+
+@app.get("/api/flood-surface.png")
+def flood_surface_image() -> Response:
+    return Response(
+        content=_flood_surface_png_bytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@lru_cache(maxsize=1)
+def _flood_surface_png_bytes() -> bytes:
+    return flood_surface_png(big_bend_world())
 
 
 @app.get("/api/flood-cells")
