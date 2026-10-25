@@ -248,7 +248,9 @@ The report stays plain: no Planner, Adversary, Verifier, rounds or models.
   Arcs the attack breaks turn red and stop flowing, and each town shows how many of its people are not reached: those who would have walked to a shelter that closed or lost its money, or out of a town cut off from a shelter outside it; funded transport still gets its riders through.
   These counts come from the plan's arcs, so they leave out people flooded outside every town; the counter shows the Simulation's total ("Sheltered 453, was 960"), and the budget tile shows the budget itself, so a cut drops it.
   A closed road never cuts a town off from a shelter inside its radius (`/api/exposure` lists them per town).
-- **Pacing:** beats play from a queue, about 5 s for a plan, 3 s for a verdict and 5 s for an attack, so the instant engine is watchable; while the next round is on its way, the caption says what the run is doing ("Round 2 · Gemma 4 is attacking the last plan and drafting a stronger one").
+- **Reroute beat (#26):** after the attack, people reroute: the arcs are redrawn to the shelters that still take them under the failure ("Rerouted" stamp), and each town shows how many still reach no shelter.
+  Each Round carries `attacked_briefing`, the field briefing for the plan with its attack applied, so the arcs and counts are the Simulation's, not estimated from the planned arcs.
+- **Pacing:** beats play from a queue, about 5 s for a plan, 3 s for a verdict, 5 s for an attack and 4 s for a reroute, so the instant engine is watchable; while the next round is on its way, the caption says what the run is doing ("Round 2 · Gemma 4 is attacking the last plan and drafting a stronger one").
 - **Progress:** one segment per round plus one for the report, done, current (pulsing) or to come, instead of an estimated percent.
 - **Skip and Cancel:** Skip stops the playback and opens the report as soon as the run ends; Cancel returns to the start.
   The report (or the budget question) opens once the last beat has had its time.

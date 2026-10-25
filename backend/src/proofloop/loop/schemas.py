@@ -227,6 +227,8 @@ class Round(_Model):
     attack: Attack | None = None
     # The plan's result with `attack` applied.
     attacked: SimulationResult | None = None
+    # Where people go once `attack` hits: the field briefing for the plan under it.
+    attacked_briefing: Briefing | None = None
     adversary_error: str | None = None
     adversary_call: AgentCall | None = None
     # The plan written up under `scenario`.

@@ -55,6 +55,8 @@ export type Round = {
   attack: Attack | null;
   /** The plan's result with `attack` applied. */
   attacked: SimulationResult | null;
+  /** Where people go once `attack` hits: the field briefing for the plan under it. */
+  attacked_briefing: Briefing | null;
   adversary_error: string | null;
   adversary_call: AgentCall | null;
   /** Set when the Planner's output was invalid and this round re-tests an earlier plan. */

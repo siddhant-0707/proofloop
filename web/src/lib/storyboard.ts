@@ -1,6 +1,6 @@
 // Turns run data into beats: what the map shows, one moment of the story at a time.
 
-import type { Action, Attack, Round, SimulationResult } from "@/lib/api";
+import type { Action, Attack, Briefing, Round, SimulationResult } from "@/lib/api";
 import { describeAction, describeAttack, type PlaceName } from "@/lib/describe";
 import { dollars, join, people } from "@/lib/format";
 
@@ -27,8 +27,9 @@ export type Figures = {
 };
 
 export type Beat = {
-  /** "note": a caption with nothing to draw, such as a round without a plan. */
-  kind: "plan" | "verdict" | "attack" | "note";
+  /** "reroute": where people go once the attack hits. "note": a caption with nothing to draw,
+   * such as a round without a plan. */
+  kind: "plan" | "verdict" | "attack" | "reroute" | "note";
   /** The round it belongs to, from 1. */
   round: number;
   caption: string;
@@ -36,7 +37,8 @@ export type Beat = {
   arcs: Arc[];
   /** Towns whose road an attack closed. */
   cutTowns: string[];
-  /** Town id -> people an attack keeps from the shelter they were heading to. */
+  /** Town id -> people an attack keeps from the shelter they were heading to; on a reroute
+   * beat, people who still reach no shelter. */
   unreached: Record<string, number>;
   figures: Figures | null;
   /** On a verdict beat: whether the plan's claims held, and why not. */
@@ -47,7 +49,7 @@ export type Beat = {
 const MIN_PEOPLE = 0.5;
 
 /** One streamed Round as beats: the Planner's plan, the Verifier's verdict, then the
- * Adversary's attack (a re-plan's last round has none). */
+ * Adversary's attack and where people go under it (a re-plan's last round has none). */
 export function roundBeats(round: Round, places: StoryPlaces): Beat[] {
   const { name } = places;
   const number = round.index + 1;
@@ -72,14 +74,7 @@ export function roundBeats(round: Round, places: StoryPlaces): Beat[] {
   for (const action of plan.actions) {
     if (action.type === "open_shelter") shelters[action.shelter_id] = "open";
   }
-  // People flooded outside every town have no single place to draw an arc from.
-  const arcs = (round.report?.briefing.neighborhoods ?? []).flatMap(({ community_id: from, shelters }) =>
-    from == null
-      ? []
-      : shelters
-          .filter((s) => s.people >= MIN_PEOPLE)
-          .map((s) => ({ from, to: s.shelter_id, people: s.people, carried: s.carried, broken: false })),
-  );
+  const arcs = round.report ? briefingArcs(round.report.briefing) : [];
   const planned: Beat = {
     kind: "plan",
     round: number,
@@ -115,9 +110,38 @@ export function roundBeats(round: Round, places: StoryPlaces): Beat[] {
     },
   ];
   if (round.attack && round.attacked) {
-    beats.push(attackBeat(planned, plan.actions, round.attack, round.attacked, places));
+    const attacked = attackBeat(planned, plan.actions, round.attack, round.attacked, places);
+    beats.push(attacked);
+    if (round.attacked_briefing) beats.push(rerouteBeat(attacked, round.attacked_briefing, round.attacked));
   }
   return beats;
+}
+
+/** Town -> shelter arcs from a field briefing. People flooded outside every town have no
+ * single place to draw an arc from. */
+function briefingArcs(briefing: Briefing): Arc[] {
+  return briefing.neighborhoods.flatMap(({ community_id: from, shelters }) =>
+    from == null
+      ? []
+      : shelters
+          .filter((s) => s.people >= MIN_PEOPLE)
+          .map((s) => ({ from, to: s.shelter_id, people: s.people, carried: s.carried, broken: false })),
+  );
+}
+
+/** The attack beat redrawn with people sent to the shelters still open to them. */
+function rerouteBeat(attackBeat: Beat, briefing: Briefing, attacked: SimulationResult): Beat {
+  const unreached: Record<string, number> = {};
+  for (const { community_id: town, people_unreached: lost } of briefing.neighborhoods) {
+    if (town != null && lost >= MIN_PEOPLE) unreached[town] = lost;
+  }
+  return {
+    ...attackBeat,
+    kind: "reroute",
+    caption: `Round ${attackBeat.round} · People reroute: ${people(attacked.people_sheltered)} of ${people(attacked.people_affected)} still reach a shelter`,
+    arcs: briefingArcs(briefing),
+    unreached,
+  };
 }
 
 /** The plan with one failure applied: what it takes out, and who can no longer get through. */
