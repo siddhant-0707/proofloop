@@ -15,7 +15,7 @@ import {
 } from "@/lib/api";
 import type { Beat } from "@/lib/storyboard";
 
-const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const BASEMAP = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
 // Shown only if the hazard layer, which defines the study area, cannot be loaded.
 const FLORIDA: [[number, number], [number, number]] = [
@@ -32,39 +32,13 @@ const TOWNS: [string, number, number][] = [
   ["Suwannee", -83.143, 29.326],
 ];
 
-// Keep in sync with KIND_RAMPS in the backend's hazard_image.py (darkest stop).
+// Keep in sync with OPEN_WATER_SURFACE / CANOPY_SURFACE in hazard_image.py (deepest stop).
 const KIND_COLORS: Record<number, string> = {
-  0: "#d7191c", // flagged, kind unknown (SME2 fallback)
-  1: "#1e3a8a", // open water
-  2: "#0284c7", // under canopy
+  0: "#38bdf8", // flagged, kind unknown (SME2 fallback): drawn as open water when zoomed out
+  1: "#93c5fd", // open water
+  2: "#22d3ee", // under canopy
 };
-// Nearly every block has a flagged cell or two; below this share they are left blank.
-const MIN_DRAWN_SHARE = 0.02;
-const SHARE_STOPS: [number, string][] = [
-  [MIN_DRAWN_SHARE, "#7dd3fc"],
-  [0.1, "#0ea5e9"],
-  [0.25, "#0369a1"],
-  [0.5, "#1e3a8a"],
-];
-const SHARE_RAMP: ExpressionSpecification = [
-  "interpolate",
-  ["linear"],
-  ["get", "share"],
-  ...SHARE_STOPS.flat(),
-];
-// A block's square grows with the share of its cells flagged, filling the block (less a
-// gap) from FULL_SHARE up.
-const FULL_SHARE = 0.4;
-const MIN_SIDE = 0.25;
-const MAX_SIDE = 0.86;
-// Each level is drawn only where its blocks are roughly 6 to 13 px wide, so squares stay crisp.
-const BLOCK_LEVELS = [
-  { factor: 40, minzoom: 0, maxzoom: 9.5 },
-  { factor: 20, minzoom: 9.5, maxzoom: 10.5 },
-  { factor: 10, minzoom: 10.5, maxzoom: 11.5 },
-  { factor: 5, minzoom: 11.5, maxzoom: 12.5 },
-  { factor: 3, minzoom: 12.5, maxzoom: 13.5 },
-].map((level) => ({ ...level, id: `flood-blocks-${level.factor}` }));
+// Zoomed out, the smoothed flood surface; from here in, each flagged 60 m cell.
 const CELLS_MINZOOM = 13.5;
 // Fewer people than this rounds to 0 in the popups.
 const SOMEONE_LIVES = 0.5;
@@ -75,17 +49,24 @@ const KIND_LABELS: Record<number, string> = {
   1: "Open water (radar darkened)",
   2: "Flooding under tree canopy (radar brightened)",
 };
-const SHELTER_COLOR = "#047857";
-const TOWN_COLOR = "#0f172a";
+const SHELTER_COLOR = "#34d399";
+const TOWN_COLOR = "#f1f5f9";
+// Behind every label on the dark basemap.
+const HALO = "#0b1120";
 const TOWN_RADIUS = 3.5;
 const PEOPLE_RING = "#f59e0b";
 // Keep in sync with FEMA_ZONE_RGB / FEMA_ZONE_ALPHA in hazard_image.py.
 const FEMA_ZONE_TINT = "rgba(20, 184, 166, 0.27)";
+// The legend's version of the flood surface: faint canopy to deep open water.
+// Keep in sync with OPEN_WATER_SURFACE / CANOPY_SURFACE in hazard_image.py.
+const SURFACE_GRADIENT = "rgba(8, 145, 178, 0.45), rgba(34, 211, 238, 0.7), #38bdf8, #93c5fd";
+// The start card's height on a narrow screen, plus a gap.
+const START_CARD_HEIGHT = 420;
 
-// FEMA flood zones are always drawn, as map context only.
-type LayerGroup = "flooding" | "population" | "shelters";
+type LayerGroup = "flooding" | "fema" | "population" | "shelters";
 const GROUP_LAYERS: Record<LayerGroup, string[]> = {
-  flooding: [...BLOCK_LEVELS.map((l) => l.id), "flood-cells", "flood-people"],
+  flooding: ["flood-surface", "flood-cells", "flood-people"],
+  fema: ["fema-zones"],
   population: ["population"],
   shelters: ["shelter-dots", "shelter-labels"],
 };
@@ -110,6 +91,8 @@ export default function HazardMap({
   const [error, setError] = useState<string | null>(null);
   const [visible, setVisible] = useState<Record<LayerGroup, boolean>>({
     flooding: true,
+    // Context only, and it tints most of the area: off until asked for.
+    fema: false,
     population: false,
     shelters: true,
   });
@@ -307,7 +290,7 @@ export default function HazardMap({
   const toggle = (group: LayerGroup) => setVisible((v) => ({ ...v, [group]: !v[group] }));
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-slate-100">
+    <div className="relative h-full w-full overflow-hidden bg-slate-900">
       {/* Sized directly: maplibre-gl.css forces position: relative on the map container. */}
       <div ref={container} className="h-full w-full" />
 
@@ -338,7 +321,7 @@ export default function HazardMap({
                   />
                   <span>
                     <span className="block font-medium text-slate-900">
-                      Hide squares where nobody lives
+                      Zoomed in, hide cells where nobody lives
                     </span>
                     {lived && (
                       <span className="block text-slate-500">
@@ -349,27 +332,13 @@ export default function HazardMap({
                   </span>
                 </label>
                 <p className="text-slate-500">
-                  Zoomed out, share of each block flagged (under {MIN_DRAWN_SHARE * 100}% left
-                  blank):
+                  Zoomed out, where flagged cells cluster, smoothed for display (lone cells fade
+                  out):
                 </p>
-                <div className="flex items-end gap-3">
-                  {[MIN_DRAWN_SHARE, 0.1, FULL_SHARE].map((share) => (
-                    <div key={share} className="flex items-center gap-1.5">
-                      <span className="flex h-3.5 w-3.5 items-center justify-center">
-                        <span
-                          style={{
-                            width: `${blockSide(share) * 100}%`,
-                            height: `${blockSide(share) * 100}%`,
-                            background: shareColor(share),
-                          }}
-                        />
-                      </span>
-                      <span className="text-slate-500">
-                        {Math.round(share * 100)}%{share === FULL_SHARE ? "+" : ""}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <div
+                  className="h-2 rounded-full"
+                  style={{ background: `linear-gradient(to right, ${SURFACE_GRADIENT})` }}
+                />
                 <p className="pt-1 text-slate-500">Zoomed in, each 60 m cell:</p>
                 {info?.open_water_cells != null && info.under_canopy_cells != null ? (
                   <>
@@ -390,9 +359,14 @@ export default function HazardMap({
 
               {exposure && (
                 <>
-                  <div className="pl-0.5">
-                    <Swatch color={FEMA_ZONE_TINT}>FEMA flood zones (Special Flood Hazard Area)</Swatch>
-                  </div>
+                  <LayerToggle
+                    checked={visible.fema}
+                    onChange={() => toggle("fema")}
+                    title="FEMA flood zones"
+                    detail="Special Flood Hazard Area · context only; plans count everyone the same"
+                  >
+                    <Swatch color={FEMA_ZONE_TINT}>In a FEMA flood zone</Swatch>
+                  </LayerToggle>
                   <LayerToggle
                     checked={visible.population}
                     onChange={() => toggle("population")}
@@ -403,7 +377,7 @@ export default function HazardMap({
                     checked={visible.shelters}
                     onChange={() => toggle("shelters")}
                     title="Public shelters"
-                    detail={`${exposure.shelters.length} sites · click any square or shelter for details`}
+                    detail={`${exposure.shelters.length} sites · zoom in and click a cell or shelter for details`}
                   />
                 </>
               )}
@@ -416,11 +390,16 @@ export default function HazardMap({
   );
 }
 
-/** Full screen on a wide display, the start card covers the left: keep the area clear of it. */
+/** Full screen, keep the area clear of the start card. */
 function fitPadding(element: HTMLElement, compact: boolean) {
-  const left = !compact && element.clientWidth >= 1024 ? 420 : 24;
-  return { top: 24, bottom: 24, right: 24, left };
+  if (compact) return { top: 24, bottom: 24, right: 24, left: 24 };
+  // Wide, the card sits on the left; narrower, it spans the top.
+  return element.clientWidth >= 1024
+    ? { top: 24, bottom: 24, right: 24, left: 420 }
+    : { top: START_CARD_HEIGHT, bottom: 48, right: 24, left: 24 };
 }
+
+
 
 const BEAT_ARCS = "beat-arcs";
 const BEAT_SHELTERS = "beat-shelters";
@@ -573,7 +552,7 @@ function addBeatLayers(map: maplibregl.Map) {
     },
     paint: {
       "text-color": ["match", ["get", "state"], "offline", ATTACK_COLOR, LOST_COLOR],
-      "text-halo-color": "#ffffff",
+      "text-halo-color": HALO,
       "text-halo-width": 2,
     },
   });
@@ -589,7 +568,7 @@ function addBeatLayers(map: maplibregl.Map) {
       "text-offset": [0, 1.6],
       "text-allow-overlap": true,
     },
-    paint: { "text-color": ATTACK_COLOR, "text-halo-color": "#ffffff", "text-halo-width": 2 },
+    paint: { "text-color": ATTACK_COLOR, "text-halo-color": HALO, "text-halo-width": 2 },
   });
   map.addLayer({
     id: "beat-arc-labels",
@@ -604,7 +583,7 @@ function addBeatLayers(map: maplibregl.Map) {
       "text-rotation-alignment": "viewport",
       "text-allow-overlap": true,
     },
-    paint: { "text-color": "#78350f", "text-halo-color": "#fffbeb", "text-halo-width": 2 },
+    paint: { "text-color": "#fcd34d", "text-halo-color": HALO, "text-halo-width": 2 },
   });
 }
 
@@ -771,16 +750,8 @@ function applyVisibility(map: maplibregl.Map, visible: Record<LayerGroup, boolea
   }
 }
 
-/** Show only flood squares with an estimated resident, or every flagged square. */
+/** Show only flagged cells with an estimated resident, or every flagged cell. */
 function applyPeopleOnly(map: maplibregl.Map, peopleOnly: boolean) {
-  for (const level of BLOCK_LEVELS) {
-    if (!map.getLayer(level.id)) continue;
-    map.setFilter(level.id, [
-      "all",
-      [">=", ["get", "share"], MIN_DRAWN_SHARE],
-      [">=", ["get", "people"], peopleOnly ? SOMEONE_LIVES : 0],
-    ]);
-  }
   if (map.getLayer("flood-cells")) {
     map.setFilter("flood-cells", peopleOnly ? [">=", ["get", "p"], SOMEONE_LIVES] : null);
   }
@@ -835,7 +806,7 @@ function addLayers(
   const { west, south, east, north } = hazard.bounds;
   const layers = map.getStyle().layers;
   const firstLabel = layers.find((l) => l.type === "symbol")?.id;
-  // Flood squares go over roads and buildings, which would otherwise slice through them,
+  // Flagged cells go over roads and buildings, which would otherwise slice through them,
   // but under the place and road names.
   const lastShape = layers.findLastIndex((l) => l.type !== "symbol");
   const namesAbove = layers.slice(lastShape + 1).find((l) => l.type === "symbol")?.id;
@@ -885,25 +856,35 @@ function addLayers(
   if (cells) {
     const grid = gridOf(hazard);
     const cellM = Math.round((grid.dlat * 111_320) / 10) * 10;
-    // A cell is only a few pixels wide below CELLS_MINZOOM, so further out each block of
-    // cells is drawn as one square showing the share of its cells that are flagged.
-    for (const level of BLOCK_LEVELS) {
-      const metres = cellM * level.factor;
-      map.addSource(level.id, { type: "geojson", data: floodBlocks(cells, grid, level.factor) });
-      map.addLayer(
-        {
-          id: level.id,
-          type: "fill",
-          source: level.id,
-          minzoom: level.minzoom,
-          maxzoom: level.maxzoom,
-          filter: [">=", ["get", "share"], MIN_DRAWN_SHARE],
-          paint: { "fill-color": SHARE_RAMP, "fill-opacity": 0.95 },
+    // A cell is only a few pixels wide below CELLS_MINZOOM, so further out the flagged cells
+    // are drawn as the backend's smoothed surface.
+    map.addSource("flood-surface", {
+      type: "image",
+      url: hazard.surface_url,
+      coordinates: [
+        [west, north],
+        [east, north],
+        [east, south],
+        [west, south],
+      ],
+    });
+    map.addLayer(
+      {
+        id: "flood-surface",
+        type: "raster",
+        source: "flood-surface",
+        maxzoom: CELLS_MINZOOM + 0.5,
+        paint: {
+          "raster-resampling": "linear",
+          "raster-fade-duration": 0,
+          // Fades out as the cells take over.
+          "raster-opacity": ["interpolate", ["linear"], ["zoom"], CELLS_MINZOOM - 0.5, 1, CELLS_MINZOOM + 0.5, 0],
         },
-        namesAbove,
-      );
-      popups.push([level.id, (p) => blockPopup(p, metres)]);
-    }
+      },
+      // Under the basemap's water, which hides any blur that spills off land onto the Gulf,
+      // rivers and lakes (permanent water carries no evidence of its own).
+      layers.find((l) => l.id.startsWith("water"))?.id ?? namesAbove,
+    );
 
     map.addSource("flood-cells", { type: "geojson", data: floodCellSquares(cells, grid) });
     map.addLayer(
@@ -949,7 +930,7 @@ function addLayers(
     paint: {
       "circle-radius": TOWN_RADIUS,
       "circle-color": TOWN_COLOR,
-      "circle-stroke-color": "#ffffff",
+      "circle-stroke-color": HALO,
       "circle-stroke-width": 1.5,
     },
   });
@@ -966,7 +947,7 @@ function addLayers(
     },
     paint: {
       "text-color": TOWN_COLOR,
-      "text-halo-color": "#ffffff",
+      "text-halo-color": HALO,
       "text-halo-width": 1.5,
     },
   });
@@ -987,7 +968,7 @@ function addLayers(
     },
     paint: {
       "text-color": CLOSED_ROAD_COLOR,
-      "text-halo-color": "#ffffff",
+      "text-halo-color": HALO,
       "text-halo-width": 1.5,
     },
   });
@@ -1002,7 +983,7 @@ function addLayers(
     paint: {
       "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 5, 14, 9],
       "circle-color": LOST_COLOR,
-      "circle-stroke-color": "#ffffff",
+      "circle-stroke-color": HALO,
       "circle-stroke-width": 2,
     },
   });
@@ -1038,7 +1019,7 @@ function addShelters(
     paint: {
       "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 5, 14, 9],
       "circle-color": SHELTER_COLOR,
-      "circle-stroke-color": "#ffffff",
+      "circle-stroke-color": HALO,
       "circle-stroke-width": 2,
     },
   });
@@ -1056,7 +1037,7 @@ function addShelters(
     },
     paint: {
       "text-color": SHELTER_COLOR,
-      "text-halo-color": "#ffffff",
+      "text-halo-color": HALO,
       "text-halo-width": 1.5,
     },
   });
@@ -1086,15 +1067,12 @@ function cellIndex(grid: GridShape, lon: number, lat: number): [row: number, col
   return [Math.floor((grid.north - lat) / grid.dlat), Math.floor((lon - grid.west) / grid.dlon)];
 }
 
-/** `size` cells square from (row, col), clipped to the grid, then shrunk about its centre by `scale`. */
-function square(grid: GridShape, row: number, col: number, size: number, scale = 1): GeoJSON.Polygon {
-  const west = grid.west + col * grid.dlon;
-  const east = grid.west + Math.min(col + size, grid.cols) * grid.dlon;
-  const north = grid.north - row * grid.dlat;
-  const south = grid.north - Math.min(row + size, grid.rows) * grid.dlat;
-  const inset = (1 - scale) / 2;
-  const [w, e] = [west + (east - west) * inset, east - (east - west) * inset];
-  const [n, s] = [north - (north - south) * inset, south + (north - south) * inset];
+/** `size` cells square from (row, col), clipped to the grid. */
+function square(grid: GridShape, row: number, col: number, size: number): GeoJSON.Polygon {
+  const w = grid.west + col * grid.dlon;
+  const e = grid.west + Math.min(col + size, grid.cols) * grid.dlon;
+  const n = grid.north - row * grid.dlat;
+  const s = grid.north - Math.min(row + size, grid.rows) * grid.dlat;
   return {
     type: "Polygon",
     coordinates: [
@@ -1117,60 +1095,6 @@ function floodCellSquares(cells: FloodCells, grid: GridShape): GeoJSON.FeatureCo
       return { type: "Feature", properties: { k, p }, geometry: square(grid, row, col, 1) };
     }),
   };
-}
-
-function floodBlocks(cells: FloodCells, grid: GridShape, factor: number): GeoJSON.FeatureCollection {
-  const blocks = new Map<
-    string,
-    { row: number; col: number; open: number; canopy: number; other: number; people: number }
-  >();
-  for (const [lon, lat, k, , p] of cells.cells) {
-    const [cellRow, cellCol] = cellIndex(grid, lon, lat);
-    const row = Math.floor(cellRow / factor) * factor;
-    const col = Math.floor(cellCol / factor) * factor;
-    const key = `${row}/${col}`;
-    const block = blocks.get(key) ?? { row, col, open: 0, canopy: 0, other: 0, people: 0 };
-    if (k === 1) block.open += 1;
-    else if (k === 2) block.canopy += 1;
-    else block.other += 1;
-    block.people += p;
-    blocks.set(key, block);
-  }
-  return {
-    type: "FeatureCollection",
-    features: [...blocks.values()].map((b) => {
-      const size = (Math.min(b.row + factor, grid.rows) - b.row) * (Math.min(b.col + factor, grid.cols) - b.col);
-      const flagged = b.open + b.canopy + b.other;
-      const share = flagged / size;
-      return {
-        type: "Feature",
-        properties: { share, flagged, open: b.open, canopy: b.canopy, people: b.people },
-        geometry: square(grid, b.row, b.col, factor, blockSide(share)),
-      };
-    }),
-  };
-}
-
-/** The legend's version of SHARE_RAMP: the colour of the nearest stop at or below `share`. */
-function shareColor(share: number): string {
-  return SHARE_STOPS.filter(([at]) => at <= share).at(-1)?.[1] ?? SHARE_STOPS[0][1];
-}
-
-/** Side of a block's square as a fraction of the block; area tracks the flagged share. */
-function blockSide(share: number): number {
-  return Math.min(MAX_SIDE, Math.max(MIN_SIDE, MAX_SIDE * Math.sqrt(share / FULL_SHARE)));
-}
-
-function blockPopup(p: Record<string, unknown>, metres: number): string {
-  const kinds = [
-    Number(p.canopy) > 0 && `${Number(p.canopy).toLocaleString()} under tree canopy`,
-    Number(p.open) > 0 && `${Number(p.open).toLocaleString()} open water`,
-  ].filter(Boolean);
-  const people = Math.round(Number(p.people));
-  return `<strong>${Math.max(1, Math.round(Number(p.share) * 100))}% of this ${metres.toLocaleString()} m square flagged as flooded</strong><br/>
-    ${Number(p.flagged).toLocaleString()} cells${kinds.length ? `: ${kinds.join(", ")}` : ""}<br/>
-    ${people > 0 ? `${people.toLocaleString()} ${people === 1 ? "person lives" : "people live"} in them` : "Nobody lives in them"}<br/>
-    <span style="color:#64748b">Zoom in to see each cell</span>`;
 }
 
 function cellPopup(p: Record<string, unknown>, metres: number): string {

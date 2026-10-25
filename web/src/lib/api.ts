@@ -190,6 +190,8 @@ export type HazardLayerInfo = {
   open_water_cells: number | null;
   under_canopy_cells: number | null;
   image_url: string;
+  /** The flagged cells smoothed into a water-like surface, for display only. */
+  surface_url: string;
 };
 
 export type ShelterInfo = {

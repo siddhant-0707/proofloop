@@ -43,6 +43,13 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
+/* MapLibre's scale bar, restyled for the dark basemap. */
+.maplibregl-ctrl.maplibregl-ctrl-scale {
+  background: rgb(2 6 23 / 0.7);
+  border-color: #cbd5e1;
+  color: #e2e8f0;
+}
+
 #print-root {
   display: none;
 }

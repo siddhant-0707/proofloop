@@ -157,7 +157,7 @@ Agreed on 2026-10-24; replaces the shelter, road and unwarned controls from #9.
   The Adversary sees only the current conditions and the plan it attacks, never the Planner's reasoning or earlier conversations.
   The Planner sees a summary of earlier rounds on purpose, so it can learn from the Verifier.
 - **Confidence:** the per-cell radar evidence stays in the data and the evidence trail but is no longer shown on the map.
-- **Hide unpopulated squares:** a map option under the flooding layer hides flagged cells, and zoomed-out blocks, with an estimated resident count under 0.5 (which rounds to 0); it is off by default and only changes the map, not the simulation.
+- **Hide unpopulated squares:** a map option under the flooding layer hides flagged cells (and, before #27, zoomed-out blocks) with an estimated resident count under 0.5 (which rounds to 0); it is off by default and only changes the map, not the simulation.
 
 ## Plan report and review
 
@@ -194,6 +194,7 @@ Agreed on 2026-10-24; replaces the score and the FEMA-zone parts above.
 - **No FEMA-zone logic:** every affected person counts the same, inside a FEMA flood zone or not.
   The unwarned attack, target outreach, people staying home and the outside-zone figures are removed from the Simulation, the evidence trail, the briefing, the report and the agents.
 - **Map:** FEMA flood zones are always tinted on the map with a legend swatch, and have no checkbox; the pink outside-zone outlines and popup lines are gone.
+  Replaced by "The flood looks like a flood (#27)": a checkbox, off by default.
 - **Shelter everyone first:** the final plan is the plan that shelters the most people as planned; among those, the most on average under single failures; then the cheaper plan, then the earlier one.
   The baseline picks the affordable set of shelters that shelters the most people, and among those the one that best survives losing a shelter; the Gemma Planner is told to shelter everyone first and hedge only with money left.
   The baseline always competes with the verified plans (the Planner's plan wins ties), so the final plan never shelters fewer people than the budget allows.
@@ -253,3 +254,18 @@ The report stays plain: no Planner, Adversary, Verifier, rounds or models.
   The report (or the budget question) opens once the last beat has had its time.
 - **Arcs, not roads:** arcs are drawn town to shelter because the Simulation moves people over grid steps through dry cells, not along roads; people flooded outside every town get no arc.
 - It still never says "stress test".
+
+## The flood looks like a flood (#27)
+
+Agreed on 2026-10-25 for the demo, on the `demo-visuals` branch.
+
+- **Dark basemap:** CARTO dark-matter replaces positron; labels get dark halos, towns are near-white and shelters a brighter green.
+- **Flood surface:** zoomed out, the map draws `/api/flood-surface.png` instead of the block squares: each kind's flagged-cell confidence blurred over 4 cells (about 240 m) and drawn where it clears 0.02, at its strongest from 0.12.
+  The flagged cells are sparse (34,000 of 2.2 million), so lone speckles fade out and clusters read as water.
+  Open water is bright blue and nearly opaque; flooding under canopy is a darker cyan and never as opaque, so it always reads fainter.
+  It is display only: the Simulation still uses the binary flagged cells, and the legend says the surface is smoothed.
+- **Permanent water:** permanent water carries no evidence, and the surface is drawn beneath the basemap's water so blur cannot spill onto the Gulf, rivers or lakes.
+- **Close up:** from zoom 13.5 the 60 m cells and their popups take over as before; the surface fades out over the last half zoom level.
+  The zoomed-out block popups are gone with the blocks.
+- **FEMA zones:** a checkbox, off by default, since the tint covers most of the area; still context only.
+- **Narrow screens:** the start screen fits the area below the start card.
