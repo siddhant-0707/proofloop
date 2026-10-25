@@ -27,6 +27,7 @@ from proofloop.gemma.providers import providers_from_env
 from proofloop.loop import (
     DEFAULT_ROUNDS,
     Adversary,
+    Plan,
     Planner,
     Round,
     Scenario,
@@ -243,21 +244,30 @@ def run_gemma_loop(scenario: Scenario | None = None) -> Transcript:
 AgentKind = Literal["gemma", "rules"]
 
 
+class LoopRequest(BaseModel):
+    scenario: Scenario | None = None
+    # For a re-plan: the previous recommendation, which the Gemma Planner starts from.
+    previous_plan: Plan | None = None
+
+
 @app.post("/api/loop/stream")
 def stream_loop(
     agents: AgentKind = "gemma",
     rounds: Annotated[int, Query(ge=1, le=DEFAULT_ROUNDS)] = DEFAULT_ROUNDS,
-    scenario: Scenario | None = None,
+    final_attack: bool = True,
+    request: LoopRequest | None = None,
 ) -> StreamingResponse:
     """Run the Loop on the Big Bend World, streaming one JSON event per line.
 
-    The body is the base Scenario (budget, offline shelters, closed roads); `rounds=1` is a
-    quick re-plan after the user changes it.
+    The body carries the base Scenario (budget, offline shelters, closed roads) and, for a
+    re-plan, the previous plan. A re-plan is `rounds=1&final_attack=false`.
 
     Events: {"type": "started", "rounds": n}, then {"type": "round", "round": ...} as each
     round completes, then {"type": "transcript", "transcript": ...} or {"type": "error"}.
     """
-    planner, adversary = _agents(agents)  # fails with 503 before streaming starts
+    request = request or LoopRequest()
+    scenario = request.scenario
+    planner, adversary = _agents(agents, request.previous_plan)  # 503 before streaming
     events: queue.Queue[dict | None] = queue.Queue()
     # Set when the client goes away (a newer run replaced this one); the Loop then stops
     # at the next round instead of spending model calls on a result nobody will see.
@@ -270,7 +280,14 @@ def stream_loop(
 
     def work() -> None:
         try:
-            transcript = _run_big_bend(scenario, planner, adversary, rounds=rounds, on_round=report)
+            transcript = _run_big_bend(
+                scenario,
+                planner,
+                adversary,
+                rounds=rounds,
+                on_round=report,
+                final_attack=final_attack,
+            )
             events.put({"type": "transcript", "transcript": transcript.model_dump(mode="json")})
         except _ClientGone:
             pass
@@ -300,7 +317,7 @@ class _ClientGone(Exception):
     """The streaming client disconnected."""
 
 
-def _agents(kind: AgentKind) -> tuple[Planner, Adversary]:
+def _agents(kind: AgentKind, starting_plan: Plan | None = None) -> tuple[Planner, Adversary]:
     if kind == "rules":
         return DemoPlanner(), DemoAdversary()
     providers = providers_from_env()
@@ -311,7 +328,7 @@ def _agents(kind: AgentKind) -> tuple[Planner, Adversary]:
             "in backend/.env",
         )
     client = GemmaClient(providers)
-    return GemmaPlanner(client), GemmaAdversary(client)
+    return GemmaPlanner(client, starting_plan), GemmaAdversary(client)
 
 
 def _run_big_bend(
@@ -320,6 +337,7 @@ def _run_big_bend(
     adversary: Adversary,
     rounds: int = DEFAULT_ROUNDS,
     on_round: Callable[[Round], None] | None = None,
+    final_attack: bool = True,
 ) -> Transcript:
     return run_proofloop(
         big_bend_world(),
@@ -328,4 +346,5 @@ def _run_big_bend(
         adversary,
         rounds=rounds,
         on_round=on_round,
+        final_attack=final_attack,
     )

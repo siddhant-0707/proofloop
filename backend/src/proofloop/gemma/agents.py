@@ -11,6 +11,7 @@ plan would still fail verification (over budget or wrong claims), it gets one
 more check with the exact numbers. The Verifier still checks the result.
 """
 
+import math
 import re
 from collections.abc import Sequence
 from typing import Annotated
@@ -22,14 +23,18 @@ from proofloop.gemma.sources import source_pack
 from proofloop.loop.agents import AgentReply
 from proofloop.loop.describe import describe_action, describe_attack, describe_damage
 from proofloop.loop.schemas import (
+    AllocateBudget,
     Attack,
     BudgetCut,
+    OpenShelter,
     Plan,
     RoadClosed,
     Round,
     Scenario,
     ShelterOffline,
     SimulationResult,
+    StageTransport,
+    TargetOutreach,
 )
 from proofloop.loop.simulation import action_cost, simulate
 from proofloop.loop.verifier import verify
@@ -91,8 +96,12 @@ _ATTACKS_ONCE_UNWARNED = Annotated[
 
 
 class GemmaPlanner:
-    def __init__(self, client: GemmaClient):
+    """`starting_plan`, for a re-plan, stands in for the first draft: Gemma adjusts the
+    previous recommendation to the new conditions instead of planning from scratch."""
+
+    def __init__(self, client: GemmaClient, starting_plan: Plan | None = None):
         self._client = client
+        self._starting_plan = starting_plan
 
     def propose(self, world: World, scenario: Scenario, history: Sequence[Round]) -> AgentReply:
         system = PLANNER_SYSTEM.format(
@@ -104,30 +113,52 @@ class GemmaPlanner:
         allowed = {**_allowed(world, scenario), "community_id": _affected_communities(world)}
         situation = "\n\n".join([_situation(world, scenario), _history(history, world)])
 
-        draft = self._client.generate(system, f"{situation}\n\nDraft a plan.", Plan, allowed)
-        checked = simulate(world, scenario, draft.value)
+        if self._starting_plan is not None and not history:
+            draft_plan, skipped = self._starting_plan, []
+            label = "your previous plan under the new conditions"
+        else:
+            draft = self._client.generate(system, f"{situation}\n\nDraft a plan.", Plan, allowed)
+            draft_plan, skipped = draft.value, list(draft.skipped)
+            label = "your draft"
+        checked = simulate(world, scenario, draft_plan)
         final = self._client.generate(
             system,
             "\n\n".join(
-                [situation, _check(draft.value, checked, scenario, world), "Give your final plan."]
+                [
+                    situation,
+                    _check(draft_plan, checked, scenario, world, label),
+                    "Give your final plan.",
+                ]
             ),
             Plan,
             allowed,
         )
-        skipped = draft.skipped + final.skipped
+        skipped += final.skipped
 
         failures = [c.reason for c in verify(world, scenario, final.value).checks if not c.passed]
         if failures:
             rechecked = simulate(world, scenario, final.value)
+            if rechecked.cost <= scenario.budget:
+                # The actions fit: only the arithmetic is off, so say exactly what to claim.
+                fix = (
+                    "Your actions fit the budget. Keep exactly the same actions and set "
+                    f"claims.cost = {rechecked.cost:.0f} and "
+                    f"claims.people_sheltered = {rechecked.people_sheltered:.1f}."
+                )
+            else:
+                fix = (
+                    "Cut actions to fit the budget, then claim the simulated numbers for the "
+                    "actions you keep."
+                )
             final = self._client.generate(
                 system,
                 "\n\n".join(
                     [
                         situation,
-                        _check(final.value, rechecked, scenario, world),
+                        _check(final.value, rechecked, scenario, world, "your final plan"),
                         "Your plan would be rejected: " + "; ".join(failures) + ".",
-                        "Fix it: stay within the budget and claim exactly the simulated numbers "
-                        "for the actions you keep. Give your final plan.",
+                        fix,
+                        "Give your final plan.",
                     ]
                 ),
                 Plan,
@@ -232,9 +263,15 @@ def _situation(world: World, scenario: Scenario) -> str:
     )
 
 
-def _check(draft: Plan, result: SimulationResult, scenario: Scenario, world: World) -> str:
+def _check(
+    draft: Plan,
+    result: SimulationResult,
+    scenario: Scenario,
+    world: World,
+    label: str = "your draft",
+) -> str:
     check = (
-        f"Simulation check of your draft ({_actions(draft, world)}): "
+        f"Simulation check of {label} ({_actions(draft, world)}): "
         f"cost ${result.cost:,.0f}, shelters {result.people_sheltered:.0f} of "
         f"{result.people_affected:.0f} affected people "
         f"(you claimed ${draft.claims.cost:,.0f} and {draft.claims.people_sheltered:.0f}). "
@@ -244,11 +281,37 @@ def _check(draft: Plan, result: SimulationResult, scenario: Scenario, world: Wor
         "Your final claims.cost must be the total for your final actions."
     )
     if result.cost > scenario.budget:
+        over = result.cost - scenario.budget
         return (
-            f"{check} The draft is OVER BUDGET by ${result.cost - scenario.budget:,.0f}. "
-            f"Your final plan must cost at most ${scenario.budget:,.0f}; drop or shrink actions."
+            f"{check} The plan is OVER BUDGET by ${over:,.0f}. "
+            f"Your final plan must cost at most ${scenario.budget:,.0f}. "
+            f"Ways to cut at least ${over:,.0f}: {_cuts(draft, world, over)}."
         )
-    return f"{check} Keep the draft or improve it."
+    return f"{check} Keep the plan or improve it."
+
+
+def _cuts(plan: Plan, world: World, over: float) -> str:
+    """Concrete edits that would bring the plan back within budget, cheapest first."""
+    options: list[str] = []
+    for action in plan.actions:
+        if isinstance(action, AllocateBudget) and action.amount - over >= 1_000:
+            options.append(f"lower the reserve to ${action.amount - over:,.0f}")
+        elif isinstance(action, AllocateBudget):
+            options.append(f"drop the ${action.amount:,.0f} reserve")
+        elif isinstance(action, StageTransport):
+            seats = math.ceil(over / world.transport_cost_per_seat)
+            if seats < action.seats:
+                options.append(
+                    f"stage {action.seats - seats} instead of {action.seats} seats for "
+                    f"{action.community_id}"
+                )
+        elif isinstance(action, TargetOutreach) and world.outreach_cost >= over:
+            options.append(f"drop the outreach in {action.community_id}")
+        elif isinstance(action, OpenShelter):
+            shelter = world.shelter(action.shelter_id)
+            if shelter and shelter.cost >= over:
+                options.append(f"drop {shelter.id} (${shelter.cost:,.0f})")
+    return "; or ".join(options[:4]) or "drop actions until the total fits"
 
 
 def _cost_breakdown(plan: Plan, world: World) -> str:

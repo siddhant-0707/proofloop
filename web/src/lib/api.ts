@@ -156,18 +156,27 @@ export const DEFAULT_SCENARIO: Scenario = {
   unwarned_outside_zones: false,
 };
 
+export type RunOptions = {
+  rounds: number;
+  /** False for a quick re-plan: the Adversary skips the last round. */
+  finalAttack: boolean;
+  /** For a re-plan, the previous recommendation the Planner starts from. */
+  previousPlan: Plan | null;
+};
+
 /** Runs the Loop on the server and calls `onEvent` for each event as it arrives. */
 export async function streamLoop(
   agents: AgentKind,
   scenario: Scenario,
-  rounds: number,
+  options: RunOptions,
   onEvent: (event: LoopEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`/api/loop/stream?agents=${agents}&rounds=${rounds}`, {
+  const query = `agents=${agents}&rounds=${options.rounds}&final_attack=${options.finalAttack}`;
+  const response = await fetch(`/api/loop/stream?${query}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(scenario),
+    body: JSON.stringify({ scenario, previous_plan: options.previousPlan }),
     signal,
   });
   if (!response.ok || !response.body) {

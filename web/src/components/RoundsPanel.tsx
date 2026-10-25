@@ -8,6 +8,7 @@ import {
   type AgentCall,
   type AgentKind,
   type Attack,
+  type Plan,
   type Round,
   type Scenario,
   type SimulationResult,
@@ -102,7 +103,9 @@ export default function RoundsPanel({
       await streamLoop(
         agents,
         scenario,
-        next === "re-plan" ? 1 : STRESS_TEST_ROUNDS,
+        next === "re-plan"
+          ? { rounds: 1, finalAttack: false, previousPlan: latestPlan(transcript, previous) }
+          : { rounds: STRESS_TEST_ROUNDS, finalAttack: true, previousPlan: null },
         (event) => {
           if (controller.signal.aborted) return;
           if (event.type === "started") setTotalRounds(event.rounds);
@@ -329,6 +332,11 @@ function ChipGroup({
       </div>
     </div>
   );
+}
+
+/** The plan a re-plan starts from: the latest recommendation, if any run produced one. */
+function latestPlan(current: Transcript | null, previous: Transcript | null): Plan | null {
+  return current?.recommendation?.plan ?? previous?.recommendation?.plan ?? null;
 }
 
 function Before({ transcript }: { transcript: Transcript }) {
@@ -572,11 +580,12 @@ function Recommendation({ transcript, replan }: { transcript: Transcript; replan
       <h3 className="text-sm font-semibold">Recommendation</h3>
       {rec ? (
         <p className="mt-1 text-sm text-slate-200">
-          {replan ? "The re-plan" : `Round ${rec.round_index + 1}'s plan`} ({describePlan(rec.plan.actions, name)}) holds
-          up best with every attack applied ({describeDamage(transcript.final_scenario, name)};
-          budget {dollars(transcript.final_scenario.budget)}):{" "}
-          {people(rec.result.people_sheltered)} of {people(rec.result.people_affected)} people
-          sheltered.
+          {replan ? "The re-plan" : `Round ${rec.round_index + 1}'s plan`} (
+          {describePlan(rec.plan.actions, name)}){" "}
+          {replan ? "is verified under the new conditions" : "holds up best with every attack applied"}{" "}
+          ({describeDamage(transcript.final_scenario, name)}; budget{" "}
+          {dollars(transcript.final_scenario.budget)}): {people(rec.result.people_sheltered)} of{" "}
+          {people(rec.result.people_affected)} people sheltered.
         </p>
       ) : (
         <p className="mt-1 text-sm text-slate-300">No plan passed verification.</p>
