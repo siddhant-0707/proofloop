@@ -19,14 +19,15 @@ const places = {
 function neighborhood(
   community_id: string | null,
   shelters: [string, number, number?][],
+  unreached = 0,
 ): NeighborhoodBriefing {
   const sheltered = shelters.reduce((sum, [, people]) => sum + people, 0);
   return {
     community_id,
     name: community_id ? name(community_id) : "Outside the towns",
-    people_affected: sheltered,
+    people_affected: sheltered + unreached,
     people_sheltered: sheltered,
-    people_unreached: 0,
+    people_unreached: unreached,
     shelters: shelters.map(([shelter_id, people, carried = 0]) => ({
       shelter_id,
       name: name(shelter_id),
@@ -69,6 +70,7 @@ function verifiedRound(): Round {
     result,
     attack: { rationale: "", type: "shelter_offline", shelter_id: "taylor-county-hs" },
     attacked: { ...result, people_sheltered: 453.13, people_unreached: 506.56, robustness: 0.47 },
+    attacked_briefing: null,
     adversary_error: null,
     adversary_call: null,
     plan_from_round: null,
@@ -293,7 +295,7 @@ describe("the Adversary's attack", () => {
   });
 
   it("is left out of a re-plan's last round, which has no attack", () => {
-    const round = { ...verifiedRound(), attack: null, attacked: null };
+    const round = { ...verifiedRound(), attack: null, attacked: null, attacked_briefing: null };
 
     expect(roundBeats(round, places).map((b) => b.kind)).toEqual(["plan", "verdict"]);
   });
@@ -321,5 +323,65 @@ describe("the Adversary's attack", () => {
 
     expect(attack.shelters).toEqual({ "ruth-raines-ms": "open", "taylor-county-hs": "open" });
     expect(attack.unreached).toEqual({ steinhatchee: 10 });
+  });
+});
+
+describe("people rerouting after the attack", () => {
+  /** Taylor County High School offline: Cross City and Steinhatchee keep their shelter,
+   * Perry's people have nowhere left to go. */
+  function attackedRound(): Round {
+    return {
+      ...verifiedRound(),
+      attacked_briefing: {
+        conditions: [],
+        limitations: [],
+        neighborhoods: [
+          neighborhood("perry", [], 299.56),
+          neighborhood("cross-city", [["ruth-raines-ms", 204.52]]),
+          neighborhood("steinhatchee", [["ruth-raines-ms", 63.84, 40]]),
+          neighborhood(null, [["ruth-raines-ms", 168.2]], 201.3),
+        ],
+      },
+    };
+  }
+
+  it("follows the attack and draws where people go under it", () => {
+    const beats = roundBeats(attackedRound(), places);
+    const [, , attack, reroute] = beats;
+
+    expect(beats.map((b) => b.kind)).toEqual(["plan", "verdict", "attack", "reroute"]);
+    expect(reroute.caption).toBe("Round 1 · People reroute: 453 of 960 still reach a shelter");
+    expect(reroute.arcs).toEqual([
+      { from: "cross-city", to: "ruth-raines-ms", people: 204.52, carried: 0, broken: false },
+      { from: "steinhatchee", to: "ruth-raines-ms", people: 63.84, carried: 40, broken: false },
+    ]);
+    expect(reroute.unreached).toEqual({ perry: 299.56 });
+    expect(reroute.shelters).toEqual(attack.shelters);
+    expect(reroute.cutTowns).toEqual(attack.cutTowns);
+    expect(reroute.figures).toEqual(attack.figures);
+  });
+
+  it("sends people to a shelter still open when theirs goes offline", () => {
+    const round = attackedRound();
+    round.attacked_briefing!.neighborhoods[0] = neighborhood("perry", [["ruth-raines-ms", 299.56]]);
+
+    const reroute = roundBeats(round, places)[3];
+
+    expect(reroute.arcs[0]).toEqual({
+      from: "perry",
+      to: "ruth-raines-ms",
+      people: 299.56,
+      carried: 0,
+      broken: false,
+    });
+    expect(reroute.unreached).toEqual({});
+  });
+
+  it("is left out when the run did not record where people go under the attack", () => {
+    expect(roundBeats(verifiedRound(), places).map((b) => b.kind)).toEqual([
+      "plan",
+      "verdict",
+      "attack",
+    ]);
   });
 });

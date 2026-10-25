@@ -113,7 +113,7 @@ function Steps({ run, playback }: { run: LoopRun; playback: Playback }) {
   );
 }
 
-/** Lands on the caption bar: the Verifier's verdict, or the Adversary's attack. */
+/** Lands on the caption bar: the Verifier's verdict, the Adversary's attack, or the reroute. */
 function BeatStamp({ beat }: { beat: Beat }) {
   if (beat.kind === "attack") {
     return (
@@ -122,6 +122,9 @@ function BeatStamp({ beat }: { beat: Beat }) {
         Attack
       </Stamp>
     );
+  }
+  if (beat.kind === "reroute") {
+    return <Stamp className="bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/60">Rerouted</Stamp>;
   }
   if (!beat.verdict) return null;
   return beat.verdict.passed ? (

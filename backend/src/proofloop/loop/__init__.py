@@ -13,6 +13,7 @@ from proofloop.loop.agents import (
     ScriptedPlanner,
 )
 from proofloop.loop.baseline import baseline_plan, full_cover_cost, with_backup
+from proofloop.loop.briefing import brief
 from proofloop.loop.report import write_report
 from proofloop.loop.schemas import (
     ATTACK,
@@ -29,7 +30,7 @@ from proofloop.loop.schemas import (
     StressTest,
     Transcript,
 )
-from proofloop.loop.simulation import simulate
+from proofloop.loop.simulation import simulate, trace
 from proofloop.loop.stress import apply_all, apply_attack, stress_test, typical, unique_attacks
 from proofloop.loop.verifier import verify
 from proofloop.world import World
@@ -101,6 +102,7 @@ def run_proofloop(
             if final_attack or not last
             else (None, None, None)
         )
+        hit = apply_attack(scenario, attack) if plan and attack else None
         history.append(
             Round(
                 index=index,
@@ -112,10 +114,9 @@ def run_proofloop(
                 verdict=verdict,
                 result=result,
                 attack=attack,
-                attacked=(
-                    simulate(world, apply_attack(scenario, attack), plan)
-                    if plan and attack
-                    else None
+                attacked=simulate(world, hit, plan) if plan and hit else None,
+                attacked_briefing=(
+                    brief(world, hit, trace(world, hit, plan)) if plan and hit else None
                 ),
                 adversary_error=adversary_error,
                 adversary_call=adversary_call,
