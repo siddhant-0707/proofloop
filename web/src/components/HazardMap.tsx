@@ -11,6 +11,7 @@ import {
   type ExposureInfo,
   type FloodCells,
   type HazardLayerInfo,
+  type Scenario,
 } from "@/lib/api";
 
 const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
@@ -80,6 +81,8 @@ const KIND_LABELS: Record<number, string> = {
   2: "Flooding under tree canopy (radar brightened)",
 };
 const SHELTER_COLOR = "#047857";
+const TOWN_COLOR = "#0f172a";
+const TOWN_RADIUS = 3.5;
 const PEOPLE_RING = "#f59e0b";
 // Keep in sync with FEMA_ZONE_RGB / FEMA_ZONE_ALPHA in hazard_image.py.
 const FEMA_ZONE_TINT = "rgba(20, 184, 166, 0.27)";
@@ -93,7 +96,7 @@ const GROUP_LAYERS: Record<LayerGroup, string[]> = {
   shelters: ["shelter-dots", "shelter-labels"],
 };
 
-export default function HazardMap() {
+export default function HazardMap({ scenario }: { scenario: Scenario }) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [info, setInfo] = useState<HazardLayerInfo | null>(null);
@@ -107,6 +110,8 @@ export default function HazardMap() {
   });
   const [legendOpen, setLegendOpen] = useState(true);
   const visibleRef = useRef(visible);
+  const scenarioRef = useRef(scenario);
+  const exposureRef = useRef<ExposureInfo | null>(null);
 
   useEffect(() => {
     let map: maplibregl.Map | null = null;
@@ -129,6 +134,7 @@ export default function HazardMap() {
       if (container.current.clientWidth < 640) setLegendOpen(false);
       setInfo(hazard);
       setExposure(people);
+      exposureRef.current = people;
 
       const b = hazard?.bounds;
       const pad = 0.35;
@@ -166,6 +172,7 @@ export default function HazardMap() {
         created.on("load", () => {
           addLayers(created, layer, people, cells);
           applyVisibility(created, visibleRef.current);
+          applyScenario(created, scenarioRef.current, people);
         });
       }
       map = created;
@@ -183,6 +190,11 @@ export default function HazardMap() {
     visibleRef.current = visible;
     if (mapRef.current) applyVisibility(mapRef.current, visible);
   }, [visible]);
+
+  useEffect(() => {
+    scenarioRef.current = scenario;
+    if (mapRef.current) applyScenario(mapRef.current, scenario, exposureRef.current);
+  }, [scenario]);
 
   function goTo(view: (typeof VIEWS)[number]) {
     const map = mapRef.current;
@@ -316,6 +328,39 @@ export default function HazardMap() {
       </div>
     </div>
   );
+}
+
+const OFFLINE_COLOR = "#94a3b8";
+const CLOSED_ROAD_COLOR = "#dc2626";
+
+/** Grey out offline shelters and mark towns whose road is closed. */
+function applyScenario(map: maplibregl.Map, scenario: Scenario, exposure: ExposureInfo | null) {
+  if (map.getLayer("shelter-dots")) {
+    const offline: ExpressionSpecification = [
+      "in",
+      ["get", "id"],
+      ["literal", scenario.offline_shelters],
+    ];
+    map.setPaintProperty("shelter-dots", "circle-color", ["case", offline, OFFLINE_COLOR, SHELTER_COLOR]);
+    map.setPaintProperty("shelter-labels", "text-color", ["case", offline, OFFLINE_COLOR, SHELTER_COLOR]);
+    map.setLayoutProperty("shelter-labels", "text-field", [
+      "case",
+      offline,
+      ["concat", ["get", "label"], "\noffline"],
+      ["get", "label"],
+    ]);
+  }
+  if (map.getLayer("town-dots") && exposure) {
+    const closedNames = exposure.communities
+      .filter((c) => scenario.closed_communities.includes(c.id))
+      .map((c) => c.name);
+    const closed: ExpressionSpecification = ["in", ["get", "name"], ["literal", closedNames]];
+    map.setPaintProperty("town-dots", "circle-color", ["case", closed, CLOSED_ROAD_COLOR, TOWN_COLOR]);
+    map.setPaintProperty("town-dots", "circle-radius", ["case", closed, 6, TOWN_RADIUS]);
+    // Closed towns move to their own label layer, which may overlap other labels.
+    map.setFilter("town-labels", ["!", closed]);
+    map.setFilter("town-closed-labels", closed);
+  }
 }
 
 function applyVisibility(map: maplibregl.Map, visible: Record<LayerGroup, boolean>) {
@@ -513,8 +558,8 @@ function addLayers(
     type: "circle",
     source: "towns",
     paint: {
-      "circle-radius": 3.5,
-      "circle-color": "#0f172a",
+      "circle-radius": TOWN_RADIUS,
+      "circle-color": TOWN_COLOR,
       "circle-stroke-color": "#ffffff",
       "circle-stroke-width": 1.5,
     },
@@ -531,7 +576,28 @@ function addLayers(
       "text-radial-offset": 0.7,
     },
     paint: {
-      "text-color": "#0f172a",
+      "text-color": TOWN_COLOR,
+      "text-halo-color": "#ffffff",
+      "text-halo-width": 1.5,
+    },
+  });
+  map.addLayer({
+    id: "town-closed-labels",
+    type: "symbol",
+    source: "towns",
+    filter: ["==", ["get", "name"], ""],
+    layout: {
+      "text-field": ["concat", ["get", "name"], "\nroad closed"],
+      "text-font": ["Montserrat Medium"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 8, 11, 13, 14],
+      // Below-left of the dot: shelter labels sit to the right, so this side is usually free.
+      "text-anchor": "top-right",
+      "text-justify": "right",
+      "text-offset": [-0.4, 0.4],
+      "text-allow-overlap": true,
+    },
+    paint: {
+      "text-color": CLOSED_ROAD_COLOR,
       "text-halo-color": "#ffffff",
       "text-halo-width": 1.5,
     },
@@ -554,6 +620,7 @@ function addShelters(
         lon: s.longitude,
         lat: s.latitude,
         props: {
+          id: s.id,
           name: s.name,
           label: `${s.name}\n${Math.round(s.capacity).toLocaleString()} spaces`,
           capacity: s.capacity,

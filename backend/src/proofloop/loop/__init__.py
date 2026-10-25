@@ -56,17 +56,21 @@ def run_proofloop(
     adversary: Adversary,
     rounds: int = DEFAULT_ROUNDS,
     on_round: Callable[[Round], None] | None = None,
+    final_attack: bool = True,
 ) -> Transcript:
     """Run `rounds` rounds of plan, verify, score and attack, then one final attack.
 
     `on_round` is called with each Round as soon as it completes, for streaming.
+    With `final_attack=False` (a quick re-plan) the Adversary skips the last round, and
+    the recommendation is scored under the conditions the last plan answered.
     """
     history: list[Round] = []
     current = scenario
-    final_attack: Attack | None = None
+    last_attack: Attack | None = None
     final_adversary_error: str | None = None
     final_adversary_call: AgentCall | None = None
     for index in range(rounds):
+        last = index == rounds - 1
         plan, planner_error, planner_call = _ask(
             Plan.model_validate, planner.propose, world, current, history
         )
@@ -76,15 +80,18 @@ def run_proofloop(
 
         verdict = verify(world, current, plan) if plan else None
         result = simulate(world, current, plan) if plan else None
-        attack, adversary_error, adversary_call = _ask(
-            partial(_validate_attack, world, current),
-            adversary.attack,
-            world,
-            current,
-            plan,
-            result,
+        attack, adversary_error, adversary_call = (
+            _ask(
+                partial(_validate_attack, world, current),
+                adversary.attack,
+                world,
+                current,
+                plan,
+                result,
+            )
+            if final_attack or not last
+            else (None, None, None)
         )
-        last = index == rounds - 1
         history.append(
             Round(
                 index=index,
@@ -102,7 +109,7 @@ def run_proofloop(
         if on_round:
             on_round(history[-1])
         if last:
-            final_attack, final_adversary_error = attack, adversary_error
+            last_attack, final_adversary_error = attack, adversary_error
             final_adversary_call = adversary_call
         if attack is not None:
             current = _apply(current, attack)
@@ -110,7 +117,7 @@ def run_proofloop(
     return Transcript(
         base_scenario=scenario,
         rounds=history,
-        final_attack=final_attack,
+        final_attack=last_attack,
         final_adversary_error=final_adversary_error,
         final_adversary_call=final_adversary_call,
         final_scenario=current,

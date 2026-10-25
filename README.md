@@ -62,7 +62,7 @@ cd web && npx tsc --noEmit && npm run lint
 | `GET /api/hazard`, `/api/hazard.png` | Hazard layer metadata and map image |
 | `GET /api/exposure`, `/api/population.png` | Population, shelters, communities, people outside FEMA zones, and the population image |
 | `GET /api/fema-zones.png` | FEMA Special Flood Hazard Area as a map image |
-| `POST /api/loop/stream?agents=gemma\|rules` | Run the Loop on the Big Bend World, streaming one JSON event per line (`started`, each `round`, then `transcript` or `error`); the web app uses this |
+| `POST /api/loop/stream?agents=gemma\|rules&rounds=1-3` | Run the Loop on the Big Bend World for the Scenario in the body, streaming one JSON event per line (`started`, each `round`, then `transcript` or `error`); the web app uses `rounds=1` to re-plan |
 | `POST /api/loop/gemma` | Run the Loop on the Big Bend World with Gemma 4 as Planner and Adversary |
 | `POST /api/loop` | Run the Loop on the Big Bend World with rule-based agents |
 | `POST /api/loop/demo` | Run the Loop on the fictional demo county with rule-based agents |

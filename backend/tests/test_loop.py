@@ -444,3 +444,28 @@ def test_reports_each_round_as_soon_as_it_completes():
     # Round n is reported right after the planner's n-th call, before the next round starts.
     assert seen == [(0, 1), (1, 2), (2, 3)]
     assert transcript.rounds[2].index == 2
+
+
+def test_a_run_can_skip_the_final_attack():
+    class CountingAdversary:
+        calls = 0
+
+        def attack(self, world, scenario, plan, result):
+            CountingAdversary.calls += 1
+            return offline("A")
+
+    world = world_from_map(["A.~"], pop=10, shelters={"A": (10, 100)})
+
+    transcript = run_proofloop(
+        world,
+        Scenario(budget=1_000),
+        ScriptedPlanner([open_plan("A", cost=100, sheltered=10)]),
+        CountingAdversary(),
+        rounds=1,
+        final_attack=False,
+    )
+
+    assert CountingAdversary.calls == 0
+    assert transcript.final_attack is None
+    assert transcript.final_scenario == transcript.base_scenario
+    assert transcript.recommendation.result.people_sheltered == 10

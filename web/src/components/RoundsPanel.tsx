@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   fetchExposure,
@@ -8,12 +8,16 @@ import {
   type AgentCall,
   type AgentKind,
   type Attack,
+  type Plan,
   type Round,
+  type Scenario,
   type SimulationResult,
   type Transcript,
 } from "@/lib/api";
 import { describeAttack, describeDamage, describePlan, type PlaceName } from "@/lib/describe";
 
+// Rounds in a full stress test; a re-plan is one round.
+const STRESS_TEST_ROUNDS = 3;
 const people = (n: number) => Math.round(n).toLocaleString();
 const dollars = (n: number) => `$${Math.round(n).toLocaleString()}`;
 
@@ -41,12 +45,31 @@ function useAttackText() {
   };
 }
 
-export default function RoundsPanel() {
+type Place = { id: string; name: string };
+
+// Wait this long after the last control change before re-planning, so dragging the
+// budget slider starts one run, not dozens.
+const REPLAN_DELAY_MS = 700;
+
+type RunKind = "stress test" | "re-plan";
+
+export default function RoundsPanel({
+  scenario,
+  onScenarioChange,
+}: {
+  scenario: Scenario;
+  onScenarioChange: (scenario: Scenario) => void;
+}) {
   const [agents, setAgents] = useState<AgentKind>("gemma");
   const [transcript, setTranscript] = useState<Transcript | null>(null);
+  const [previous, setPrevious] = useState<Transcript | null>(null);
+  const [kind, setKind] = useState<RunKind>("stress test");
+  // Re-planning on every change starts once a full stress test has finished.
+  const [canReplan, setCanReplan] = useState(false);
   const [liveRounds, setLiveRounds] = useState<Round[]>([]);
-  const [totalRounds, setTotalRounds] = useState(3);
-  const [names, setNames] = useState<Record<string, string>>({});
+  const [totalRounds, setTotalRounds] = useState(STRESS_TEST_ROUNDS);
+  const [shelters, setShelters] = useState<Place[]>([]);
+  const [communities, setCommunities] = useState<Place[]>([]);
   const [outsideZones, setOutsideZones] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
@@ -56,30 +79,41 @@ export default function RoundsPanel() {
   useEffect(() => {
     fetchExposure()
       .then((e) => {
-        setNames(Object.fromEntries([...e.shelters, ...e.communities].map((p) => [p.id, p.name])));
+        setShelters(e.shelters);
+        setCommunities(e.communities);
         setOutsideZones(e.people_outside_fema_zones);
       })
       .catch(() => {});
     return () => abort.current?.abort();
   }, []);
 
-  async function run() {
+  async function run(next: RunKind) {
+    // A new run replaces any run still streaming, so stale rounds never show.
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
+    setKind(next);
     setRunning(true);
     setStartedAt(Date.now());
     setError(null);
+    if (transcript) setPrevious(transcript);
     setTranscript(null);
     setLiveRounds([]);
     try {
       await streamLoop(
         agents,
+        scenario,
+        next === "re-plan"
+          ? { rounds: 1, finalAttack: false, previousPlan: latestPlan(transcript, previous) }
+          : { rounds: STRESS_TEST_ROUNDS, finalAttack: true, previousPlan: null },
         (event) => {
+          if (controller.signal.aborted) return;
           if (event.type === "started") setTotalRounds(event.rounds);
-          else if (event.type === "round") setLiveRounds((rounds) => [...rounds, event.round]);
-          else if (event.type === "transcript") setTranscript(event.transcript);
-          else setError(event.detail);
+          else if (event.type === "round") setLiveRounds((done) => [...done, event.round]);
+          else if (event.type === "transcript") {
+            setTranscript(event.transcript);
+            setCanReplan(true);
+          } else setError(event.detail);
         },
         controller.signal,
       );
@@ -90,74 +124,231 @@ export default function RoundsPanel() {
     }
   }
 
+  // Every change to the base Scenario re-plans one round, once the debounce settles.
+  const runRef = useRef(run);
+  runRef.current = run;
+  useEffect(() => {
+    if (!canReplan) return;
+    const timer = setTimeout(() => runRef.current("re-plan"), REPLAN_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [scenario, canReplan]);
+
+  const names = useMemo(
+    () => Object.fromEntries([...shelters, ...communities].map((p) => [p.id, p.name])),
+    [shelters, communities],
+  );
+  const replan = kind === "re-plan";
   const rounds = transcript?.rounds ?? liveRounds;
   const idle = !running && !transcript && !error;
 
   return (
     <PlaceNames.Provider value={names}>
       <OutsideZones.Provider value={outsideZones}>
-      <section className="flex h-full min-h-0 flex-col gap-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Stress test</h2>
-            <p className="text-xs text-slate-500">
-              Dixie and Taylor counties, 4 public shelters
-              {transcript && `. Budget ${dollars(transcript.base_scenario.budget)}`}.
-            </p>
-            <AgentPicker value={agents} onChange={setAgents} disabled={running} />
+        <section className="flex h-full min-h-0 flex-col gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">Stress test</h2>
+              <p className="text-xs text-slate-500">
+                Dixie and Taylor counties
+                {shelters.length > 0 && `, ${shelters.length} public shelters`}
+              </p>
+              <AgentPicker value={agents} onChange={setAgents} disabled={running} />
+            </div>
+            <button
+              type="button"
+              onClick={() => run("stress test")}
+              disabled={running && !replan}
+              className="shrink-0 rounded-lg bg-slate-900 px-3.5 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-wait disabled:opacity-60"
+            >
+              {running && !replan ? "Running…" : transcript ? "Run again" : "Run stress test"}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={run}
-            disabled={running}
-            className="shrink-0 rounded-lg bg-slate-900 px-3.5 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-wait disabled:opacity-60"
-          >
-            {running ? "Running…" : transcript ? "Run again" : "Run stress test"}
-          </button>
-        </div>
 
-        {error && (
-          <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700 ring-1 ring-red-200">
-            {error}
-          </p>
-        )}
+          <ScenarioControls
+            scenario={scenario}
+            onChange={onScenarioChange}
+            shelters={shelters}
+            communities={communities}
+            canUnwarn={outsideZones != null}
+            replans={canReplan}
+          />
 
-        {idle && (
-          <p className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-            The Planner proposes a plan, the Verifier recomputes its claims, and the Adversary
-            knocks out a shelter before the next round. After the last round, one final attack
-            decides which plan to recommend.
-          </p>
-        )}
+          {error && (
+            <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700 ring-1 ring-red-200">
+              {error}
+            </p>
+          )}
 
-        {(rounds.length > 0 || running) && (
-          <ol className="flex min-h-0 flex-col gap-3 overflow-y-auto pb-1">
-            {rounds.map((round) => (
-              <RoundCard
-                key={round.index}
-                round={round}
-                recommended={transcript?.recommendation?.round_index === round.index}
-              />
-            ))}
-            {running && !transcript && startedAt !== null && (
-              <Progress
-                agents={agents}
-                done={rounds.length}
-                total={totalRounds}
-                startedAt={startedAt}
-              />
-            )}
-            {transcript && (
-              <>
-                <FinalAttack transcript={transcript} />
-                <Recommendation transcript={transcript} />
-              </>
-            )}
-          </ol>
-        )}
-      </section>
+          {idle && (
+            <p className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
+              The Planner proposes a plan, the Verifier recomputes its claims, and the Adversary
+              attacks it before the next round. After the last round, one final attack decides
+              which plan to recommend. After the first run, changing the conditions re-plans.
+            </p>
+          )}
+
+          {(rounds.length > 0 || running) && (
+            <ol className="flex min-h-0 flex-col gap-3 overflow-y-auto pb-1">
+              {replan && previous?.recommendation && <Before transcript={previous} />}
+              {rounds.map((round) => (
+                <RoundCard
+                  key={round.index}
+                  round={round}
+                  title={replan ? "Re-plan" : undefined}
+                  recommended={transcript?.recommendation?.round_index === round.index}
+                />
+              ))}
+              {running && !transcript && startedAt !== null && (
+                <Progress
+                  agents={agents}
+                  done={rounds.length}
+                  total={totalRounds}
+                  replan={replan}
+                  startedAt={startedAt}
+                />
+              )}
+              {transcript && (
+                <>
+                  <FinalAttack transcript={transcript} />
+                  <Recommendation transcript={transcript} replan={replan} />
+                </>
+              )}
+            </ol>
+          )}
+        </section>
       </OutsideZones.Provider>
     </PlaceNames.Provider>
+  );
+}
+
+const BUDGET = { min: 25_000, max: 250_000, step: 5_000 };
+
+function ScenarioControls({
+  scenario,
+  onChange,
+  shelters,
+  communities,
+  canUnwarn,
+  replans,
+}: {
+  scenario: Scenario;
+  onChange: (scenario: Scenario) => void;
+  shelters: Place[];
+  communities: Place[];
+  canUnwarn: boolean;
+  replans: boolean;
+}) {
+  const toggle = (list: string[], id: string) =>
+    list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+  return (
+    <fieldset className="space-y-2.5 rounded-xl border border-slate-200 bg-white p-3.5 text-xs text-slate-700">
+      <legend className="px-1 text-xs font-semibold text-slate-900">
+        Conditions
+        {replans && <span className="font-normal text-slate-500"> · changes re-plan</span>}
+      </legend>
+      <label className="block">
+        <span className="flex justify-between">
+          <span>Budget</span>
+          <span className="tabular-nums font-medium text-slate-900">{dollars(scenario.budget)}</span>
+        </span>
+        <input
+          type="range"
+          min={BUDGET.min}
+          max={BUDGET.max}
+          step={BUDGET.step}
+          value={scenario.budget}
+          onChange={(e) => onChange({ ...scenario, budget: Number(e.target.value) })}
+          className="mt-1 w-full accent-slate-900"
+        />
+      </label>
+      {shelters.length > 0 && (
+        <ChipGroup
+          label="Shelter offline"
+          options={shelters}
+          selected={scenario.offline_shelters}
+          onToggle={(id) =>
+            onChange({ ...scenario, offline_shelters: toggle(scenario.offline_shelters, id) })
+          }
+        />
+      )}
+      {communities.length > 0 && (
+        <ChipGroup
+          label="Road closed"
+          options={communities}
+          selected={scenario.closed_communities}
+          onToggle={(id) =>
+            onChange({ ...scenario, closed_communities: toggle(scenario.closed_communities, id) })
+          }
+        />
+      )}
+      {canUnwarn && (
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={scenario.unwarned_outside_zones}
+            onChange={(e) => onChange({ ...scenario, unwarned_outside_zones: e.target.checked })}
+            className="accent-slate-900"
+          />
+          People outside FEMA flood zones are unwarned
+        </label>
+      )}
+    </fieldset>
+  );
+}
+
+function ChipGroup({
+  label,
+  options,
+  selected,
+  onToggle,
+}: {
+  label: string;
+  options: Place[];
+  selected: string[];
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-1 text-slate-500">{label}</p>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((option) => {
+          const on = selected.includes(option.id);
+          return (
+            <button
+              key={option.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onToggle(option.id)}
+              className={`rounded-full px-2.5 py-1 font-medium ring-1 transition ${
+                on
+                  ? "bg-amber-50 text-amber-800 ring-amber-300"
+                  : "bg-white text-slate-600 ring-slate-200 hover:bg-slate-50"
+              }`}
+            >
+              {option.name}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** The plan a re-plan starts from: the latest recommendation, if any run produced one. */
+function latestPlan(current: Transcript | null, previous: Transcript | null): Plan | null {
+  return current?.recommendation?.plan ?? previous?.recommendation?.plan ?? null;
+}
+
+function Before({ transcript }: { transcript: Transcript }) {
+  const name = usePlaceName();
+  const rec = transcript.recommendation;
+  if (!rec) return null;
+  return (
+    <li className="rounded-xl border border-dashed border-slate-300 p-3 text-xs text-slate-500">
+      <span className="font-medium text-slate-700">Before the change:</span>{" "}
+      {describePlan(rec.plan.actions, name)} · {people(rec.result.people_sheltered)} of{" "}
+      {people(rec.result.people_affected)} sheltered with every attack applied
+    </li>
   );
 }
 
@@ -165,11 +356,13 @@ function Progress({
   agents,
   done,
   total,
+  replan,
   startedAt,
 }: {
   agents: AgentKind;
   done: number;
   total: number;
+  replan: boolean;
   startedAt: number;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -178,9 +371,12 @@ function Progress({
     return () => clearInterval(timer);
   }, []);
   const who = agents === "gemma" ? "Gemma 4" : "The rule-based agents";
+  const verb = agents === "gemma" ? "is" : "are";
   const step =
     done < total
-      ? `${who} ${agents === "gemma" ? "is" : "are"} planning round ${done + 1} of ${total}`
+      ? replan
+        ? `${who} ${verb} re-planning for the new conditions`
+        : `${who} ${verb} planning round ${done + 1} of ${total}`
       : "Choosing the final attack and the recommendation";
   return (
     <li
@@ -196,14 +392,24 @@ function Progress({
   );
 }
 
-function RoundCard({ round, recommended }: { round: Round; recommended: boolean }) {
+function RoundCard({
+  round,
+  recommended,
+  title,
+}: {
+  round: Round;
+  recommended: boolean;
+  title?: string;
+}) {
   const name = usePlaceName();
   const attackText = useAttackText();
   const failed = round.verdict?.checks.filter((c) => !c.passed) ?? [];
   return (
     <li className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-slate-900">Round {round.index + 1}</h3>
+        <h3 className="text-sm font-semibold text-slate-900">
+          {title ?? `Round ${round.index + 1}`}
+        </h3>
         <div className="flex gap-1.5">
           {recommended && <Badge tone="blue">Recommended</Badge>}
           {round.verdict &&
@@ -366,7 +572,7 @@ function FinalAttack({ transcript }: { transcript: Transcript }) {
   );
 }
 
-function Recommendation({ transcript }: { transcript: Transcript }) {
+function Recommendation({ transcript, replan }: { transcript: Transcript; replan: boolean }) {
   const name = usePlaceName();
   const rec = transcript.recommendation;
   return (
@@ -374,11 +580,12 @@ function Recommendation({ transcript }: { transcript: Transcript }) {
       <h3 className="text-sm font-semibold">Recommendation</h3>
       {rec ? (
         <p className="mt-1 text-sm text-slate-200">
-          Round {rec.round_index + 1}&apos;s plan ({describePlan(rec.plan.actions, name)}) holds
-          up best with every attack applied ({describeDamage(transcript.final_scenario, name)};
-          budget {dollars(transcript.final_scenario.budget)}):{" "}
-          {people(rec.result.people_sheltered)} of {people(rec.result.people_affected)} people
-          sheltered.
+          {replan ? "The re-plan" : `Round ${rec.round_index + 1}'s plan`} (
+          {describePlan(rec.plan.actions, name)}){" "}
+          {replan ? "is verified under the new conditions" : "holds up best with every attack applied"}{" "}
+          ({describeDamage(transcript.final_scenario, name)}; budget{" "}
+          {dollars(transcript.final_scenario.budget)}): {people(rec.result.people_sheltered)} of{" "}
+          {people(rec.result.people_affected)} people sheltered.
         </p>
       ) : (
         <p className="mt-1 text-sm text-slate-300">No plan passed verification.</p>

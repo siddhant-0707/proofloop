@@ -118,3 +118,16 @@ Agreed on 2026-10-24.
   In live runs this turns some rejected rounds into verified ones; Gemma still sometimes overspends by a few thousand dollars, and the Verifier rejects those.
 - **No repeated attacks:** an attack already in effect (a shelter already offline, a road already closed, people already unwarned) is invalid Adversary output.
   Gemma's Adversary is only offered roads still open, and the unwarned attack is removed from its schema once in effect.
+
+## Scenario controls and re-plan (#9)
+
+Agreed on 2026-10-24.
+
+- **Controls:** budget ($25,000 to $250,000), shelter offline, road closed, and the FEMA unwarned switch edit a base Scenario shared by the map and the panel.
+- **Re-plan:** after a full stress test completes, each change re-plans after a 700 ms debounce.
+  A re-plan is one round with no final attack, and the Gemma Planner starts from the previous recommendation instead of drafting from scratch.
+- **Planner feedback:** when a plan is over budget, the check lists concrete cuts (lower the reserve to a stated amount, stage fewer seats, drop an outreach or a shelter).
+  When a plan fits the budget and only its claims are wrong, the check gives the exact numbers to claim.
+- **Stale runs:** the browser aborts and ignores them; the server stops the Loop at the next round once the client disconnects.
+- **Measured (Gemma 4 via OpenRouter, 6 re-plans from one previous plan):** 2 verified; typical time 8 to 30 s, with one 68 s outlier.
+  Rule-based re-plans are instant and verified, so use them for the live slider moment in the demo.
