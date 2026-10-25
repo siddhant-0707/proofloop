@@ -52,7 +52,7 @@ Checks:
 
 ```bash
 cd backend && uv run pytest && uv run pyright && uv run ruff check . && uv run ruff format --check .
-cd web && npx tsc --noEmit && npm run lint
+cd web && npx tsc --noEmit && npm run lint && npm test
 ```
 
 ## API
